@@ -106,6 +106,16 @@ main:	# Initialize the game
 	li $a3, 79
 	jal draw_plane
 	
+	li $v0, 32
+	li $a0, 2000
+	syscall
+	
+	li $a0, 5
+	li $a1, 79
+	li $a2, 5
+	li $a3, 78
+	jal draw_plane
+	
 	# Terminate
 	li $v0, 10
 	syscall
@@ -237,11 +247,56 @@ delta_up:
 	sw $t1, -4($a0)
 	addi $a0, $a0, -WIDTH_ADDR
 	sw $t1, -8($a0)
-	
 	j drawp_end
 	
 delta_down:
-
+	jal coor_to_addr
+	# Draw new cockpit
+	sw $t0, 0($v0)
+	sw $t0, 4($v0)
+	# Draw new nose
+	sw $t1, 12($v0)
+	sw $t1, 16($v0)
+	# Overwrite old cockpit
+	addi $a0, $v0, -WIDTH_ADDR
+	sw $t1, 0($a0)
+	sw $t1, 4($a0)
+	# Overwrite old nose
+	sw $t3, 12($a0)
+	sw $t3, 16($a0)
+	# Overwrite old left shoulder
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t3, 4($a0)
+	sw $t3, 8($a0)
+	# Draw new left pulser
+	sw $t2, -16($a0)
+	sw $t1, -12($a0)
+	# Overwrite old left remaining
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t3, 0($a0)
+	sw $t3, -12($a0)
+	sw $t3, -16($a0)
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t3, -4($a0)
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t3, -8($a0)
+	# Draw new right shoulder
+	addi $a0, $v0, WIDTH_ADDR
+	sw $t1, 4($a0)
+	sw $t1, 8($a0)
+	# Overwrite old right pulser
+	sw $t3, -16($a0)
+	sw $t3, -12($a0)
+	# Draw right remaining
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t1, 0($a0)
+	sw $t2, -16($a0)
+	sw $t1, -12($a0)
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t1, -4($a0)
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t1, -8($a0)
+	j drawp_end
 delta_left:
 
 delta_right:
