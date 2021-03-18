@@ -10,7 +10,8 @@
 # - Unit height in pixels: 4 
 # - Display width in pixels: 512 (128 visual pixels)
 # - Display height in pixels: 512 (128 visual pixels)
-# - Base Address for Display: 0x10008000 ($gp)
+# - Base Address for Display: 0x10010000 (static data) 
+# (!) The board is too big to fit into $gp. Distruption with other chunks was observed (!)
 #
 # Which milestones have been reached in this submission?
 # (See the assignment handout for descriptions of the milestones)
@@ -34,7 +35,7 @@
 # 
 #####################################################################
 .data	
-#MAP:	.word	0:16384	# The map is 128x128 = 16384 in size
+MAP:	.word	0:16384	# The map is 128x128 = 16384 in size
 OBSTS:	.byte	0:40	# struct obst {
 			#     char x;
 			#     char y;
@@ -50,8 +51,9 @@ ENEMIES:	.byte	0:6	# struct enemy {
 			#     char frame;
 			# }
 
-.eqv	BASE_ADDRESS	0x10008000	# The top left of the map
-.eqv	PLAY_ADDRESS	0x1000c410	# The top left of the actual game
+
+.eqv	BASE_ADDRESS	0x10010000	# The top left of the map
+.eqv	PLAY_ADDRESS	0x10014410	# The top left of the actual game
 .eqv	WIDTH		128
 .eqv	HEIGHT		128
 .eqv	WIDTH_ADDR	512
@@ -188,12 +190,48 @@ ke_w:	ble $s1, 35, key_end # Skip if y is already at top border
 	jal draw_plane
 	j key_end
 key_end:	
-
+	# Move all rocks left
+	la $t4, OBSTS
+	li $t5, 0
+move_start:
+	beq $t5, 40, move_end	# End loop if reached the end
+	add $t4, $t4, $t5	# Shift pointer to the corrct index
+	# Load alive
+	lb $t0, 3($t4)
+	beq $t0, 0, move_skip	# If not alive, skip
+	# Load x and y
+	lb $a0, 0($t4)
+	lb $a1, 1($t4)
+	addi $a0, $a0, -1	# x--
+	sb $a0, 0($t4)	# Save x back
+	li $a3, 0		# Init "should_erase" to 0
+	bgt $a0, 5, in_game	# If after the movement the rock.x > 5, then it's still in game
+	# If it is out of bound, set the field alive to 0 and $s4 -= 4
+	sb $zero, 3($t4)
+	addi $s4, $s4, -4	
+	li $a3, 1		# Set "should_erase" to 1
+	addi $a0, $a0, 1
+in_game:	
+	jal draw_rock1
+move_skip:
+	addi $t5, $t5, 4	# Advance index
+	j move_start
+move_end:
 	
 	# Whether a new rock should spawn?
 	bge $s4, 40, spawn_end	# Don't spawn and don't count down if there're already 10 rocks
 	bgtz $s5, no_spawn		# Don't spawn if cd is not 0
 	# Do spawn a rock
+	# Find a dead element in the rock array
+	la $t0, OBSTS
+	li $t1, 0
+find_dead_start:
+	add $t0, $t0, $t1	# Shift pointer to next index
+	lb $t2, 3($t0)
+	beqz $t2, found_dead
+	addi $t1, $t1, 4	# Advance index
+	blt $t1, 40, find_dead_start	# Spawn a rock at the end of the array no matter what.
+found_dead:
 	# Call RNG, decide the y coord for the rock
 	li $v0, 42
 	li $a0, 0
@@ -201,9 +239,6 @@ key_end:
 	syscall
 	addi $a1, $a0, 35	# Shift the RN downward into the playground
 	li $a0, 122	# Load x coord for the rock
-	# Init the correct element in the rock array
-	la $t0, OBSTS
-	add $t0, $s4, $t0
 	sb $a0, 0($t0)
 	sb $a1, 1($t0)
 	li $t1, 1		# Init speed and alive to 1
@@ -212,7 +247,7 @@ key_end:
 	addi, $s4, $s4, 4	# Advance num_rocks
 	# Draw the rock
 	jal draw_rock1
-	li $s5, 125	# Reset count down
+	li $s5, 20	# Reset count down
 	j spawn_end
 no_spawn:	
 	addi, $s5, $s5, -1	# Count down
@@ -537,17 +572,18 @@ drawp_whole:
 drawp_end:
 	jr $t8
 	
-# This function draws the type 1 rock at (x, y) centralized. It takes 2 parameters:
-# x and y, and uses register calling convention. This function moves the rock to the
+# This function draws the type 1 rock at (x, y) centralized. It takes 3 parameters:
+# x, y, and erase, and uses register calling convention. This function moves the rock to the
 # left by 1 pixel, or if x is set to 122 (the right-most valid pixel, draws an entire
-# stone.
+# stone. If erase is set to 1, erase the stone at (x, y)
 draw_rock1:
 	move $t8, $ra
 	# Load colors
 	li $t1, ROCK1
 	li $t2, ROCK2
 	li $t3, ROCK3
-	blt $a0, 122, drawr1_shift
+	beq $a3, 1, drawr1_erase
+	blt $a0, 122, drawr1_shift	# Draw shift
 	
 drawr1_full: # Draw rock 1 full
 	jal coor_to_addr
@@ -571,6 +607,7 @@ drawr1_full: # Draw rock 1 full
 	jr $t8
 drawr1_shift: # Draw rock 1 shift
 	li $t0, BLACK	# We need to erase things
+	jal coor_to_addr
 	sw $t1, -4($v0)
 	sw $t2, 8($v0)
 	sw $t0, 12($v0)
@@ -588,6 +625,26 @@ drawr1_shift: # Draw rock 1 shift
 	sw $t0, 4($a0)
 	sw $t2, 0($a0)
 	jr $t8
-	
+drawr1_erase:
+	li $t0, BLACK
+	jal coor_to_addr
+	sw $t0, 0($v0)
+	sw $t0, -4($v0)
+	sw $t0, 4($v0)
+	sw $t0, -8($v0)
+	sw $t0, 8($v0)
+	addi $a0, $v0, WIDTH_ADDR
+	sw $t0, 0($a0)
+	sw $t0, -4($a0)
+	sw $t0, 4($a0)	
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t0, 0($a0)
+	addi $a0, $v0, -WIDTH_ADDR
+	sw $t0, 0($a0)
+	sw $t0, -4($a0)
+	sw $t0, 4($a0)	
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t0, 0($a0)
+	jr $t8
 	
 	
