@@ -62,6 +62,7 @@ ENEMY:	.byte	0:6	# struct enemy {
 .eqv	BLUE		0x000000ff
 .eqv	VIOLET		0x00ff00ff
 .eqv	DARK_GREY		0x0045283c
+.eqv	BLACK		0x00000000
 
 .text
 .globl main
@@ -93,6 +94,16 @@ main:	# Initialize the game
 	li $a1, 79
 	li $a2, -1
 	li $a3, -1
+	jal draw_plane	# Draw entire plane
+	
+	li $v0, 32
+	li $a0, 2000
+	syscall
+	
+	li $a0, 5
+	li $a1, 78
+	li $a2, 5
+	li $a3, 79
 	jal draw_plane
 	
 	# Terminate
@@ -158,24 +169,86 @@ coor_to_addr:
 	jr $ra		# return
 
 # This function draws the player plane at (x, y) centralized. It takes four parameters: 
-# x, y, old_x, old_y and uses register calling convention. Set old_x or old_y to -1 to 
-# draw an entire plane. Otherwise, (x, y) and (old_x, old_y) should be neighbouring 
-# pixels and this function only draws the difference between two frames.
+# x, y, old_x, old_y and uses register calling convention. Set old_x to -1 to draw an 
+# entire plane, or set old_x to zero, and old_y to -1 to skip rendering. 
+# Otherwise, (x, y) and (old_x, old_y) should be neighbouring pixels and this function 
+# only draws the difference between two frames.
 # This function modifies a lot of things, do not assume any perservation.
 draw_plane:
 	move $t8, $ra	# Move $ra away, this function calls many other functions
-	# Get central address
-	jal coor_to_addr
 	# Load color values
 	li $t0, DARK_GREY
 	li $t1, RED
 	li $t2, YELLOW
-	# Draw entire plane if old_x or old_y is negative.
+	li $t3, BLACK
+	# Draw entire plane if old_x is negative.
 	bltz $a2, drawp_whole
-	bltz $a3, drawp_whole
+	# Skip if old_y is negative.
+	bltz $a3, drawp_end
+	# Else, check in which way have the plane moved.
+	blt $a0, $a2, delta_left
+	bgt $a0, $a2, delta_right
+	bgt $a1, $a3, delta_down
+#	blt $a1, $a3, delta_up
+delta_up:
+	jal coor_to_addr
+	# Draw new cockpit
+	sw $t0, 0($v0)
+	sw $t0, 4($v0)
+	# Draw new nose
+	sw $t1, 12($v0)
+	sw $t1, 16($v0)
+	# Overwrite old cockpit
+	addi $a0, $v0, WIDTH_ADDR
+	sw $t1, 0($a0)
+	sw $t1, 4($a0)
+	# Overwrite old nose
+	sw $t3, 12($a0)
+	sw $t3, 16($a0)
+	# Overwrite old right shoulder
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t3, 4($a0)
+	sw $t3, 8($a0)
+	# Draw new right pulser
+	sw $t2, -16($a0)
+	sw $t1, -12($a0)
+	# Overwrite old right remaining
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t3, 0($a0)
+	sw $t3, -12($a0)
+	sw $t3, -16($a0)
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t3, -4($a0)
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t3, -8($a0)
+	# Draw new left shoulder
+	addi $a0, $v0, -WIDTH_ADDR
+	sw $t1, 4($a0)
+	sw $t1, 8($a0)
+	# Overwrite old left pulser
+	sw $t3, -16($a0)
+	sw $t3, -12($a0)
+	# Draw left remaining
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t1, 0($a0)
+	sw $t2, -16($a0)
+	sw $t1, -12($a0)
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t1, -4($a0)
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t1, -8($a0)
 	
+	j drawp_end
+	
+delta_down:
+
+delta_left:
+
+delta_right:
 	
 drawp_whole:
+	# Get central address
+	jal coor_to_addr
 	# Draw cockpit
 	sw $t0 0($v0)
 	sw $t0 4($v0)
