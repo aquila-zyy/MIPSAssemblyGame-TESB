@@ -53,7 +53,16 @@ ENEMY:	.byte	0:6	# struct enemy {
 .eqv	WIDTH		128
 .eqv	HEIGHT		128
 .eqv	WIDTH_ADDR	512
-	# Colors
+
+# Keys
+.eqv	KEY_DETECT	0xffff0000
+.eqv	KEY_A		0x61
+.eqv	KEY_D		0x64
+.eqv	KEY_S		0x73
+.eqv	KEY_W		0x77
+.eqv	KEY_P		0x70
+.eqv	KEY_J		0x6a
+# Colors
 .eqv	WHITE		0x00ffffff
 .eqv	RED		0x00ac3232
 .eqv	YELLOW		0x00fbf236
@@ -72,23 +81,23 @@ main:	# Initialize the game
 	li $a1, 0
 	li $a2, WIDTH
 	li $a3, CYAN
-	jal draw_hori	# Draw top border
+	#jal draw_hori	# Draw top border
 	li $a0, 0
 	li $a1, 127
 	li $a2, WIDTH
-	jal draw_hori	# Draw bottom border
+	#jal draw_hori	# Draw bottom border
 	li $a0, 0
 	li $a1, 30
 	li $a2, WIDTH
-	jal draw_hori	# Draw middle border
+	#jal draw_hori	# Draw middle border
 	li $a0, 0
 	li $a1, 0
 	li $a2, HEIGHT
-	jal draw_vert	# Draw left border
+	#jal draw_vert	# Draw left border
 	li $a0, 127
 	li $a1, 0
 	li $a2, HEIGHT
-	jal draw_vert	# Draw right border
+	#jal draw_vert	# Draw right border
 	
 	li $a0, 5
 	li $a1, 79
@@ -96,26 +105,78 @@ main:	# Initialize the game
 	li $a3, -1
 	jal draw_plane	# Draw entire plane
 	
-	li $v0, 32
-	li $a0, 2000
-	syscall
+	# Initialize $s0 to $s3 to store x, y, old_x, old_y
+	li $s0, 5
+	li $s1, 79
+	li $s2, 5
+	li $s3, 79
 	
-	li $a0, 5
-	li $a1, 78
-	li $a2, 5
-	li $a3, 79
+mainloop:	
+	li $t9, KEY_DETECT
+	lw $t8, 0($t9)
+	beq $t8, 1, keyevent
+	j continue
+keyevent:	lw $t2, 4($t9)
+	beq $t2, KEY_D, ke_d
+	beq $t2, KEY_S, ke_s
+	beq $t2, KEY_A, ke_a
+	beq $t2, KEY_W, ke_w
+	
+ke_d:	bge $s0, 122, continue # Skip if x is already at right border
+	# Overwrite old coordinates
+	move $s2, $s0
+	move $s3, $s1
+	# Update coordinates
+	addi $s0, $s0, 1
+	move $a0, $s0
+	move $a1, $s1
+	move $a2, $s2
+	move $a3, $s3
 	jal draw_plane
-	
-	li $v0, 32
-	li $a0, 2000
-	syscall
-	
-	li $a0, 5
-	li $a1, 79
-	li $a2, 5
-	li $a3, 78
+	j continue
+ke_a:	ble $s0, 5, continue # Skip if x is already at left border
+	# Overwrite old coordinates
+	move $s2, $s0
+	move $s3, $s1
+	# Update coordinates
+	addi $s0, $s0, -1
+	move $a0, $s0
+	move $a1, $s1
+	move $a2, $s2
+	move $a3, $s3
 	jal draw_plane
-	
+	j continue
+ke_s:	bge $s1, 122, continue # Skip if y is already at bottom border
+	# Overwrite old coordinates
+	move $s2, $s0
+	move $s3, $s1
+	# Update coordinates
+	addi $s1, $s1, 1
+	move $a0, $s0
+	move $a1, $s1
+	move $a2, $s2
+	move $a3, $s3
+	jal draw_plane
+	j continue
+ke_w:	ble $s1, 35, continue # Skip if y is already at top border
+	# Overwrite old coordinates
+	move $s2, $s0
+	move $s3, $s1
+	# Update coordinates
+	addi $s1, $s1, -1
+	move $a0, $s0
+	move $a1, $s1
+	move $a2, $s2
+	move $a3, $s3
+	jal draw_plane
+	j continue
+
+continue:
+	li $v0, 32
+	li $a0, 40
+	syscall
+	j mainloop
+mainend:		
 	# Terminate
 	li $v0, 10
 	syscall
@@ -179,10 +240,9 @@ coor_to_addr:
 	jr $ra		# return
 
 # This function draws the player plane at (x, y) centralized. It takes four parameters: 
-# x, y, old_x, old_y and uses register calling convention. Set old_x to -1 to draw an 
-# entire plane, or set old_x to zero, and old_y to -1 to skip rendering. 
-# Otherwise, (x, y) and (old_x, old_y) should be neighbouring pixels and this function 
-# only draws the difference between two frames.
+# x, y, old_x, old_y and uses register calling convention. Set old_x or old_y to -1 to 
+# draw an entire plane. Otherwise, (x, y) and (old_x, old_y) should be neighbouring 
+# pixels and this function only draws the difference between two frames.
 # This function modifies a lot of things, do not assume any perservation.
 draw_plane:
 	move $t8, $ra	# Move $ra away, this function calls many other functions
@@ -191,15 +251,15 @@ draw_plane:
 	li $t1, RED
 	li $t2, YELLOW
 	li $t3, BLACK
-	# Draw entire plane if old_x is negative.
+	# Draw entire plane if old_x or old_y is negative.
 	bltz $a2, drawp_whole
-	# Skip if old_y is negative.
 	bltz $a3, drawp_end
 	# Else, check in which way have the plane moved.
 	blt $a0, $a2, delta_left
 	bgt $a0, $a2, delta_right
 	bgt $a1, $a3, delta_down
-#	blt $a1, $a3, delta_up
+	blt $a1, $a3, delta_up
+	j drawp_end # If both are the same, skip
 delta_up:
 	jal coor_to_addr
 	# Draw new cockpit
@@ -298,8 +358,86 @@ delta_down:
 	sw $t1, -8($a0)
 	j drawp_end
 delta_left:
+	jal coor_to_addr
+	# Redraw cockpit line
+	sw $t0, 0($v0)
+	sw $t1, 8($v0)
+	sw $t3, 20($v0)
+	sw $t1, -8($v0)
+	# Redraw left shoulder
+	addi $a0, $v0, -WIDTH_ADDR
+	sw $t3, 12($a0)
+	sw $t1, -8($a0)
+	# Redraw left pulser
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t3, 4($a0)
+	sw $t2, -16($a0)
+	sw $t1, -12($a0)
+	# Redraw left remaining
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t3, 0($a0)
+	sw $t1, -8($a0)
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t3, -4($a0)
+	sw $t1, -8($a0)
+	# Redraw right shoulder
+	addi $a0, $v0, WIDTH_ADDR
+	sw $t3, 12($a0)
+	sw $t1, -8($a0)
+	# Redraw right pulser
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t3, 4($a0)
+	sw $t2, -16($a0)
+	sw $t1, -12($a0)
+	# Redraw right remaining
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t3, 0($a0)
+	sw $t1, -8($a0)
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t3, -4($a0)
+	sw $t1, -8($a0)
+	j drawp_end
 
 delta_right:
+	jal coor_to_addr
+	# Redraw cockpit line
+	sw $t1, -4($v0)
+	sw $t0, 4($v0)
+	sw $t1, 16($v0)
+	sw $t3, -12($v0)
+	# Redraw left shoulder
+	addi $a0, $v0, -WIDTH_ADDR
+	sw $t1, 8($a0)
+	sw $t3, -12($a0)
+	# Redraw left pulser
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t1, 0($a0)
+	sw $t3, -20($a0)
+	sw $t2, -16($a0)
+	# Redraw left remaining
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t1, -4($a0)
+	sw $t3, -12($a0)
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t1, -8($a0)
+	sw $t3, -12($a0)
+	# Redraw right shoulder
+	addi $a0, $v0, WIDTH_ADDR
+	sw $t1, 8($a0)
+	sw $t3, -12($a0)
+	# Redraw right pulser
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t1, 0($a0)
+	sw $t3, -20($a0)
+	sw $t2, -16($a0)
+	# Redraw right remaining
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t1, -4($a0)
+	sw $t3, -12($a0)
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t1, -8($a0)
+	sw $t3, -12($a0)
+	j drawp_end
 	
 drawp_whole:
 	# Get central address
