@@ -34,15 +34,17 @@
 # 
 #####################################################################
 .data	
-MAP:	.word	0:16384	# The map is 128x128 = 16384 in size
-OBST:	.byte	0:30	# struct obst {
+#MAP:	.word	0:16384	# The map is 128x128 = 16384 in size
+OBSTS:	.byte	0:40	# struct obst {
 			#     char x;
 			#     char y;
 			#     char speed;
+			#     char alive;
 			# }
 			# We can have at most 10 obstacles simultaneously.
+
 			
-ENEMY:	.byte	0:6	# struct enemy {
+ENEMIES:	.byte	0:6	# struct enemy {
 			#     char x;
 			#     char y;
 			#     char frame;
@@ -72,6 +74,11 @@ ENEMY:	.byte	0:6	# struct enemy {
 .eqv	VIOLET		0x00ff00ff
 .eqv	DARK_GREY		0x0045283c
 .eqv	BLACK		0x00000000
+
+.eqv	ROCK0		0x00484f4f
+.eqv	ROCK1		0x00696a6a
+.eqv	ROCK2		0x008c8f91
+.eqv	ROCK3		0x00b9b9b9
 
 .text
 .globl main
@@ -105,24 +112,34 @@ main:	# Initialize the game
 	li $a3, -1
 	jal draw_plane	# Draw entire plane
 	
+	
+# s0 to s3 are plane position
+# s4 is number of obstacles on screen * 4, so that it is the address
+# shift to the first empty rock
+# s5 is obstacle count down (obst_cd), the delay before another 
+# obstacle should spawn.
+	
 	# Initialize $s0 to $s3 to store x, y, old_x, old_y
 	li $s0, 5
 	li $s1, 79
 	li $s2, 5
 	li $s3, 79
-	
+	# Init obst_cd to 125 (5 seconds before first spawn)
+	li $s5, 125
+	# Init num_obst to 0
+	li $s4, 0
 mainloop:	
 	li $t9, KEY_DETECT
 	lw $t8, 0($t9)
 	beq $t8, 1, keyevent
-	j continue
+	j key_end
 keyevent:	lw $t2, 4($t9)
 	beq $t2, KEY_D, ke_d
 	beq $t2, KEY_S, ke_s
 	beq $t2, KEY_A, ke_a
 	beq $t2, KEY_W, ke_w
 	
-ke_d:	bge $s0, 122, continue # Skip if x is already at right border
+ke_d:	bge $s0, 122, key_end # Skip if x is already at right border
 	# Overwrite old coordinates
 	move $s2, $s0
 	move $s3, $s1
@@ -133,8 +150,8 @@ ke_d:	bge $s0, 122, continue # Skip if x is already at right border
 	move $a2, $s2
 	move $a3, $s3
 	jal draw_plane
-	j continue
-ke_a:	ble $s0, 5, continue # Skip if x is already at left border
+	j key_end
+ke_a:	ble $s0, 5, key_end # Skip if x is already at left border
 	# Overwrite old coordinates
 	move $s2, $s0
 	move $s3, $s1
@@ -145,8 +162,8 @@ ke_a:	ble $s0, 5, continue # Skip if x is already at left border
 	move $a2, $s2
 	move $a3, $s3
 	jal draw_plane
-	j continue
-ke_s:	bge $s1, 122, continue # Skip if y is already at bottom border
+	j key_end
+ke_s:	bge $s1, 122, key_end # Skip if y is already at bottom border
 	# Overwrite old coordinates
 	move $s2, $s0
 	move $s3, $s1
@@ -157,8 +174,8 @@ ke_s:	bge $s1, 122, continue # Skip if y is already at bottom border
 	move $a2, $s2
 	move $a3, $s3
 	jal draw_plane
-	j continue
-ke_w:	ble $s1, 35, continue # Skip if y is already at top border
+	j key_end
+ke_w:	ble $s1, 35, key_end # Skip if y is already at top border
 	# Overwrite old coordinates
 	move $s2, $s0
 	move $s3, $s1
@@ -169,9 +186,37 @@ ke_w:	ble $s1, 35, continue # Skip if y is already at top border
 	move $a2, $s2
 	move $a3, $s3
 	jal draw_plane
-	j continue
+	j key_end
+key_end:	
 
-continue:
+	
+	# Whether a new rock should spawn?
+	bge $s4, 40, spawn_end	# Don't spawn and don't count down if there're already 10 rocks
+	bgtz $s5, no_spawn		# Don't spawn if cd is not 0
+	# Do spawn a rock
+	# Call RNG, decide the y coord for the rock
+	li $v0, 42
+	li $a0, 0
+	li $a1, 87
+	syscall
+	addi $a1, $a0, 35	# Shift the RN downward into the playground
+	li $a0, 122	# Load x coord for the rock
+	# Init the correct element in the rock array
+	la $t0, OBSTS
+	add $t0, $s4, $t0
+	sb $a0, 0($t0)
+	sb $a1, 1($t0)
+	li $t1, 1		# Init speed and alive to 1
+	sb $t1, 2($t0)
+	sb $t1, 3($t0)
+	addi, $s4, $s4, 4	# Advance num_rocks
+	# Draw the rock
+	jal draw_rock1
+	li $s5, 125	# Reset count down
+	j spawn_end
+no_spawn:	
+	addi, $s5, $s5, -1	# Count down
+spawn_end:
 	li $v0, 32
 	li $a0, 40
 	syscall
@@ -489,9 +534,60 @@ drawp_whole:
 	addi $a0, $a0, -WIDTH_ADDR
 	sw $t1, -12($a0)
 	
-	
-	
-	
 drawp_end:
 	jr $t8
+	
+# This function draws the type 1 rock at (x, y) centralized. It takes 2 parameters:
+# x and y, and uses register calling convention. This function moves the rock to the
+# left by 1 pixel, or if x is set to 122 (the right-most valid pixel, draws an entire
+# stone.
+draw_rock1:
+	move $t8, $ra
+	# Load colors
+	li $t1, ROCK1
+	li $t2, ROCK2
+	li $t3, ROCK3
+	blt $a0, 122, drawr1_shift
+	
+drawr1_full: # Draw rock 1 full
+	jal coor_to_addr
+	sw $t1, 0($v0)
+	sw $t1, -4($v0)
+	sw $t1, 4($v0)
+	sw $t2, -8($v0)
+	sw $t2, 8($v0)
+	addi $a0, $v0, WIDTH_ADDR
+	sw $t2, 0($a0)
+	sw $t2, -4($a0)
+	sw $t2, 4($a0)	
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t3, 0($v0)
+	addi $a0, $v0, -WIDTH_ADDR
+	sw $t2, 0($a0)
+	sw $t2, -4($a0)
+	sw $t2, 4($a0)	
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t3, 0($v0)
+	jr $t8
+drawr1_shift: # Draw rock 1 shift
+	li $t0, BLACK	# We need to erase things
+	sw $t1, -4($v0)
+	sw $t2, 8($v0)
+	sw $t0, 12($v0)
+	sw $t2, -8($v0)
+	addi $a0, $v0, WIDTH_ADDR
+	sw $t0, 8($a0)
+	sw $t2, -4($a0)
+	addi $a0, $a0, WIDTH_ADDR
+	sw $t0, 4($a0)
+	sw $t2, 0($a0)
+	addi $a0, $v0, -WIDTH_ADDR
+	sw $t0, 8($a0)
+	sw $t2, -4($a0)
+	addi $a0, $a0, -WIDTH_ADDR
+	sw $t0, 4($a0)
+	sw $t2, 0($a0)
+	jr $t8
+	
+	
 	
