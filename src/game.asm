@@ -86,36 +86,112 @@ ENEMIES:	.byte	0:6	# struct enemy {
 .globl main
 main:	# Initialize the game
 	# Draw the borders
-	li $a0, 0
-	li $a1, 0
+	# Draw top border
+	li $a0, 1
+	li $a1, 1
 	li $a2, WIDTH
-	li $a3, CYAN
-	#jal draw_hori	# Draw top border
-	li $a0, 0
-	li $a1, 127
+	addi $a2, $a2, -2
+	li $a3, WHITE
+	jal draw_hori
+	li $a0, 4
+	li $a1, 4
 	li $a2, WIDTH
-	#jal draw_hori	# Draw bottom border
-	li $a0, 0
+	addi $a2, $a2, -8
+	jal draw_hori
+	li $a0, 2
+	li $a1, 2
+	li $a2, WIDTH
+	addi $a2, $a2, -4
+	li $a3, ROCK3
+	jal draw_hori
+	li $a0, 3
+	li $a1, 3
+	li $a2, WIDTH
+	addi $a2, $a2, -6
+	jal draw_hori
+	# Draw middle border
+	li $a0, 2
+	li $a1, 29
+	li $a2, WIDTH
+	addi $a2, $a2, -4
+	jal draw_hori
+	li $a0, 3
+	li $a1, 28
+	li $a2, WIDTH
+	addi $a2, $a2, -6
+	jal draw_hori
+	li $a0, 1
 	li $a1, 30
 	li $a2, WIDTH
-	#jal draw_hori	# Draw middle border
-	li $a0, 0
-	li $a1, 0
-	li $a2, HEIGHT
-	#jal draw_vert	# Draw left border
-	li $a0, 127
-	li $a1, 0
-	li $a2, HEIGHT
-	#jal draw_vert	# Draw right border
+	addi $a2, $a2, -2
+	li $a3, WHITE
+	jal draw_hori
+	li $a0, 4
+	li $a1, 27
+	li $a2, WIDTH
+	addi $a2, $a2, -8
+	jal draw_hori
+	# Draw left border
+	li $a0, 1
+	li $a1, 1
+	li $a2, 29
+	jal draw_vert
+	li $a0, 4
+	li $a1, 4
+	li $a2, 23
+	jal draw_vert
+	li $a0, 2
+	li $a1, 2
+	li $a2, 27
+	li $a3, ROCK3
+	jal draw_vert
+	li $a0, 3
+	li $a1, 3
+	li $a2, 25
+	jal draw_vert
+	# Draw right border
+	li $a0, 125
+	li $a1, 2
+	li $a2, 27
+	jal draw_vert
+	li $a0, 124
+	li $a1, 3
+	li $a2, 25
+	jal draw_vert
+	li $a0, 126
+	li $a1, 1
+	li $a2, 29
+	li $a3, WHITE
+	jal draw_vert
+	li $a0, 123
+	li $a1, 4
+	li $a2, 23
+	jal draw_vert
+	# Draw corner dots
+	li $a0, 1
+	li $a1, 1
+	jal coor_to_addr
+	li $t0, BLACK
+	li $t1, WHITE
+	sw $t0, 0($v0)
+	sw $t0, 500($v0)
+	sw $t1, 516($v0)
+	sw $t1, 1008($v0)
+	li $a0, 1
+	li $a1, 30
+	jal coor_to_addr
+	sw $t0, 0($v0)
+	sw $t0, 500($v0)
+	sw $t1, -16($v0)
+	sw $t1, -508($v0)
 	
 	li $a0, 5
 	li $a1, 79
 	li $a2, -1
-	li $a3, -1
 	jal draw_plane	# Draw entire plane
 	
 	
-# s0 to s3 are plane position
+# s0 to s2 are plane position
 # s4 is number of obstacles on screen * 4, so that it is the address
 # shift to the first empty rock
 # s5 is obstacle count down (obst_cd), the delay before another 
@@ -142,15 +218,11 @@ keyevent:	lw $t2, 4($t9)
 	beq $t2, KEY_W, ke_w
 	
 ke_d:	bge $s0, 122, key_end # Skip if x is already at right border
-	# Overwrite old coordinates
-	move $s2, $s0
-	move $s3, $s1
 	# Update coordinates
 	addi $s0, $s0, 1
 	move $a0, $s0
 	move $a1, $s1
-	move $a2, $s2
-	move $a3, $s3
+	li $a2, 3
 	jal draw_plane
 	j key_end
 ke_a:	ble $s0, 5, key_end # Skip if x is already at left border
@@ -161,8 +233,7 @@ ke_a:	ble $s0, 5, key_end # Skip if x is already at left border
 	addi $s0, $s0, -1
 	move $a0, $s0
 	move $a1, $s1
-	move $a2, $s2
-	move $a3, $s3
+	li $a2, 2
 	jal draw_plane
 	j key_end
 ke_s:	bge $s1, 122, key_end # Skip if y is already at bottom border
@@ -173,8 +244,7 @@ ke_s:	bge $s1, 122, key_end # Skip if y is already at bottom border
 	addi $s1, $s1, 1
 	move $a0, $s0
 	move $a1, $s1
-	move $a2, $s2
-	move $a3, $s3
+	li $a2, 1
 	jal draw_plane
 	j key_end
 ke_w:	ble $s1, 35, key_end # Skip if y is already at top border
@@ -185,39 +255,57 @@ ke_w:	ble $s1, 35, key_end # Skip if y is already at top border
 	addi $s1, $s1, -1
 	move $a0, $s0
 	move $a1, $s1
-	move $a2, $s2
-	move $a3, $s3
+	li $a2, 0
 	jal draw_plane
 	j key_end
 key_end:	
 	# Move all rocks left
-	la $t4, OBSTS
+	# $t6 points to the start of the obstacle array
+	# $t5 is the index (shift)
+	# $t0 is temorarily used to skip if not alive (can be modified)
+	# $a0 and $a1 are the coordinates of the rock
+	# $a3 is used to let drawer know whether a rock should be erased
+	la $t6, OBSTS
 	li $t5, 0
 move_start:
 	beq $t5, 40, move_end	# End loop if reached the end
-	add $t4, $t4, $t5	# Shift pointer to the corrct index
+	add $t6, $t6, $t5	# Shift pointer to the corrct index
 	# Load alive
-	lb $t0, 3($t4)
+	lb $t0, 3($t6)
 	beq $t0, 0, move_skip	# If not alive, skip
 	# Load x and y
-	lb $a0, 0($t4)
-	lb $a1, 1($t4)
+	lb $a0, 0($t6)
+	lb $a1, 1($t6)
 	addi $a0, $a0, -1	# x--
-	sb $a0, 0($t4)	# Save x back
+	sb $a0, 0($t6)	# Save x back
 	li $a3, 0		# Init "should_erase" to 0
 	bgt $a0, 5, in_game	# If after the movement the rock.x > 5, then it's still in game
-	# If it is out of bound, set the field alive to 0 and $s4 -= 4
-	sb $zero, 3($t4)
+reach_end:# If it is out of bound, set the field alive to 0 and $s4 -= 4
+	sb $zero, 3($t6)
 	addi $s4, $s4, -4	
 	li $a3, 1		# Set "should_erase" to 1
 	addi $a0, $a0, 1
 in_game:	
 	jal draw_rock1
+	beqz $v1, move_skip
+collision_happened:
+	# Paint out rock and redraw plane
+	lb $a0, 0($t6)
+	lb $a1, 1($t6)
+	li $a3, 1		# "should_erase" = 1
+	jal draw_rock1
+	sb $zero, 3($t6)	# Set dead in memory
+	# Redraw plane
+	move $a0, $s0
+	move $a1, $s1
+	li $a2, -1
+	jal draw_plane
+	addi $s4, $s4, -4	# Shrink num_obst
 move_skip:
 	addi $t5, $t5, 4	# Advance index
 	j move_start
 move_end:
-	
+spawn_start:
 	# Whether a new rock should spawn?
 	bge $s4, 40, spawn_end	# Don't spawn and don't count down if there're already 10 rocks
 	bgtz $s5, no_spawn		# Don't spawn if cd is not 0
@@ -247,7 +335,12 @@ found_dead:
 	addi, $s4, $s4, 4	# Advance num_rocks
 	# Draw the rock
 	jal draw_rock1
-	li $s5, 20	# Reset count down
+	# Call RNG, decide the new count down.
+	li $v0, 42
+	li $a0, 0
+	li $a1, 10
+	syscall
+	addi, $s5, $a0, 5	# New rock spawn in 25 to 75 (2 to 3 sec)
 	j spawn_end
 no_spawn:	
 	addi, $s5, $s5, -1	# Count down
@@ -319,10 +412,11 @@ coor_to_addr:
 	addi $v0, $a0, BASE_ADDRESS	# Actual memory address
 	jr $ra		# return
 
-# This function draws the player plane at (x, y) centralized. It takes four parameters: 
-# x, y, old_x, old_y and uses register calling convention. Set old_x or old_y to -1 to 
-# draw an entire plane. Otherwise, (x, y) and (old_x, old_y) should be neighbouring 
-# pixels and this function only draws the difference between two frames.
+# This function draws the player plane at (x, y) centralized. It takes three parameters: 
+# x, y, and movement, and uses register calling convention. Set movement to -1 to 
+# draw an entire plane. Set 0, 1, 2, 3 to indicate the plane has moved towards up, down,
+# left, or right, respectively. Set movement to -2 to skip drawing entirely.
+# This function only draws the difference between two frames.
 # This function modifies a lot of things, do not assume any perservation.
 draw_plane:
 	move $t8, $ra	# Move $ra away, this function calls many other functions
@@ -331,15 +425,14 @@ draw_plane:
 	li $t1, RED
 	li $t2, YELLOW
 	li $t3, BLACK
-	# Draw entire plane if old_x or old_y is negative.
-	bltz $a2, drawp_whole
-	bltz $a3, drawp_end
-	# Else, check in which way have the plane moved.
-	blt $a0, $a2, delta_left
-	bgt $a0, $a2, delta_right
-	bgt $a1, $a3, delta_down
-	blt $a1, $a3, delta_up
-	j drawp_end # If both are the same, skip
+	# Check in which way should we draw this frame
+	beq $a2, -1, drawp_whole
+	beq $a2, -2, drawp_end
+	beq $a2, 2, delta_left
+	beq $a2, 3, delta_right
+	beq $a2, 1, delta_down
+	beq $a2, 0, delta_up
+	j drawp_end
 delta_up:
 	jal coor_to_addr
 	# Draw new cockpit
@@ -576,8 +669,11 @@ drawp_end:
 # x, y, and erase, and uses register calling convention. This function moves the rock to the
 # left by 1 pixel, or if x is set to 122 (the right-most valid pixel, draws an entire
 # stone. If erase is set to 1, erase the stone at (x, y)
+# This function also return 1 if the rock has collided with the ship. It stores the return
+# value in $v1. 
 draw_rock1:
 	move $t8, $ra
+	li $v1, 0 # Init return value
 	# Load colors
 	li $t1, ROCK1
 	li $t2, ROCK2
@@ -608,6 +704,11 @@ drawr1_full: # Draw rock 1 full
 drawr1_shift: # Draw rock 1 shift
 	li $t0, BLACK	# We need to erase things
 	jal coor_to_addr
+	# Test collision on nose
+	lw $t3, -8($v0)
+	bne $t3, RED, no_collide1
+	li $v1, 1
+no_collide1: # Test end 1
 	sw $t1, -4($v0)
 	sw $t2, 8($v0)
 	sw $t0, 12($v0)
@@ -617,12 +718,22 @@ drawr1_shift: # Draw rock 1 shift
 	sw $t2, -4($a0)
 	addi $a0, $a0, WIDTH_ADDR
 	sw $t0, 4($a0)
+	# Test collision on left point
+	lw $t3, -4($a0)
+	bne $t3, RED, no_collide2
+	li $v1, 1
+no_collide2: # Test end 2
 	sw $t2, 0($a0)
 	addi $a0, $v0, -WIDTH_ADDR
 	sw $t0, 8($a0)
 	sw $t2, -4($a0)
 	addi $a0, $a0, -WIDTH_ADDR
 	sw $t0, 4($a0)
+	# Test collision on right point
+	lw $t3, -4($a0)
+	bne $t3, RED, no_collide3
+	li $v1, 1
+no_collide3: # Test end 3
 	sw $t2, 0($a0)
 	jr $t8
 drawr1_erase:
