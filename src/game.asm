@@ -50,6 +50,7 @@ ENEMIES:	.byte	0:6	# struct enemy {
 			#     char y;
 			#     char frame;
 			# }
+HP_BAR:	.byte	23	# The x coord of the last pixel of the HP_BAR (y is 21)
 
 
 .eqv	BASE_ADDRESS	0x10010000	# The top left of the map
@@ -57,6 +58,8 @@ ENEMIES:	.byte	0:6	# struct enemy {
 .eqv	WIDTH		128
 .eqv	HEIGHT		128
 .eqv	WIDTH_ADDR	512
+
+.eqv	MAX_ROCK1		20		# This value / 4 is the actual limit
 
 # Keys
 .eqv	KEY_DETECT	0xffff0000
@@ -184,6 +187,37 @@ main:	# Initialize the game
 	sw $t0, 500($v0)
 	sw $t1, -16($v0)
 	sw $t1, -508($v0)
+	# Draw "HP"
+	li $a0, 6
+	li $a1, 21
+	li $a2, RED
+	jal draw_H
+	li $a0, 10
+	li $a1, 21
+	jal draw_P
+	# Draw HP bar
+	li $a0, 14
+	li $a1, 21
+	li $a2, 10
+	li $a3, RED
+	jal draw_hori
+	li $a0, 14
+	li $a1, 22
+	li $a2, 10
+	jal draw_hori
+	li $a0, 14
+	li $a1, 23
+	li $a2, 10
+	jal draw_hori
+	li $a0, 14
+	li $a1, 24
+	li $a2, 10
+	jal draw_hori
+	li $a0, 14
+	li $a1, 25
+	li $a2, 10
+	jal draw_hori
+	
 	
 	li $a0, 5
 	li $a1, 79
@@ -202,10 +236,14 @@ main:	# Initialize the game
 	li $s1, 79
 	li $s2, 5
 	li $s3, 79
-	# Init obst_cd to 125 (5 seconds before first spawn)
-	li $s5, 125
+	# Init obst_cd
+	li $s5, 25
 	# Init num_obst to 0
 	li $s4, 0
+	# Init HP
+	li $s6, 10
+	# Init score
+	li $s7, 0
 mainloop:	
 	li $t9, KEY_DETECT
 	lw $t8, 0($t9)
@@ -301,13 +339,24 @@ collision_happened:
 	li $a2, -1
 	jal draw_plane
 	addi $s4, $s4, -4	# Shrink num_obst
+	addi $s6, $s6, -1	# Deduct HP
+	# Shirnk HP bar
+	la $t0, HP_BAR
+	lb $a0, 0($t0)
+	addi $a0, $a0, -1
+	sb $a0, 0($t0)
+	addi $a0, $a0, 1
+	li $a1, 21
+	li $a2, 5
+	li $a3, BLACK
+	jal draw_vert 
 move_skip:
 	addi $t5, $t5, 4	# Advance index
 	j move_start
 move_end:
 spawn_start:
 	# Whether a new rock should spawn?
-	bge $s4, 40, spawn_end	# Don't spawn and don't count down if there're already 10 rocks
+	bge $s4, MAX_ROCK1, spawn_end	# Don't spawn and don't count down if there're already 10 rocks
 	bgtz $s5, no_spawn		# Don't spawn if cd is not 0
 	# Do spawn a rock
 	# Find a dead element in the rock array
@@ -318,7 +367,7 @@ find_dead_start:
 	lb $t2, 3($t0)
 	beqz $t2, found_dead
 	addi $t1, $t1, 4	# Advance index
-	blt $t1, 40, find_dead_start	# Spawn a rock at the end of the array no matter what.
+	blt $t1, MAX_ROCK1, find_dead_start	# Spawn a rock at the end of the array no matter what.
 found_dead:
 	# Call RNG, decide the y coord for the rock
 	li $v0, 42
@@ -345,11 +394,47 @@ found_dead:
 no_spawn:	
 	addi, $s5, $s5, -1	# Count down
 spawn_end:
+	blez $s6, mainend
 	li $v0, 32
-	li $a0, 40
+	li $a0, 20
 	syscall
 	j mainloop
-mainend:		
+mainend:	
+	# Draw "GAME OVER"
+	li $a0, 48
+	li $a1, 64
+	li $a2, RED
+	jal draw_G
+	li $a0, 52
+	li $a1, 64
+	li $a2, RED
+	jal draw_A
+	li $a0, 56
+	li $a1, 64
+	li $a2, RED
+	jal draw_M
+	li $a0, 60
+	li $a1, 64
+	li $a2, RED
+	jal draw_E
+	
+	li $a0, 64
+	li $a1, 64
+	li $a2, RED
+	jal draw_O
+	li $a0, 68
+	li $a1, 64
+	li $a2, RED
+	jal draw_V
+	li $a0, 72
+	li $a1, 64
+	li $a2, RED
+	jal draw_E
+	li $a0, 76
+	li $a1, 64
+	li $a2, RED
+	jal draw_R
+	
 	# Terminate
 	li $v0, 10
 	syscall
@@ -758,4 +843,153 @@ drawr1_erase:
 	sw $t0, 0($a0)
 	jr $t8
 	
-	
+# ========== Draw letters and numbers ==========
+draw_A:	move $t8, $ra
+	jal coor_to_addr
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	jr $t8
+draw_E:	move $t8, $ra
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	jr $t8
+draw_G:	move $t8, $ra
+	jal coor_to_addr
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	jr $t8
+draw_H:	move $t8, $ra
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	jr $t8
+draw_M:	move $t8, $ra
+	jal coor_to_addr
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	jr $t8
+draw_O:	move $t8, $ra
+	jal coor_to_addr
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	jr $t8
+draw_P:	move $t8, $ra
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	jr $t8
+draw_R:	move $t8, $ra
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	jr $t8
+draw_V:	move $t8, $ra
+	jal coor_to_addr
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	jr $t8
+
+
+
+
+
