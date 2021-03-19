@@ -36,7 +36,7 @@
 #####################################################################
 .data	
 MAP:	.word	0:16384	# The map is 128x128 = 16384 in size
-OBSTS:	.byte	0:40	# struct obst {
+OBSTS:	.byte	0:60	# struct obst {
 			#     char x;
 			#     char y;
 			#     char speed;
@@ -59,7 +59,7 @@ HP_BAR:	.byte	23	# The x coord of the last pixel of the HP_BAR (y is 21)
 .eqv	HEIGHT		128
 .eqv	WIDTH_ADDR	512
 
-.eqv	MAX_ROCK1		20		# This value / 4 is the actual limit
+.eqv	MAX_ROCK1		60		# This value / 4 is the actual limit
 
 # Keys
 .eqv	KEY_DETECT	0xffff0000
@@ -219,10 +219,12 @@ main:	# Initialize the game
 	jal draw_hori
 	
 	
-	li $a0, 5
-	li $a1, 79
-	li $a2, -1
-	jal draw_plane	# Draw entire plane
+	li $s0, 5
+	li $s1, 79
+	li $s3, RED	# Default color is red
+	li $a0, -1	# Draw entirely
+	move $a1, $s3	# Red
+	jal draw_plane	# Draw
 	
 	
 # s0 to s2 are plane position
@@ -231,13 +233,11 @@ main:	# Initialize the game
 # s5 is obstacle count down (obst_cd), the delay before another 
 # obstacle should spawn.
 	
-	# Initialize $s0 to $s3 to store x, y, old_x, old_y
+	# Initialize $s0 and $s1 to store x, y.
 	li $s0, 5
 	li $s1, 79
-	li $s2, 5
-	li $s3, 79
 	# Init obst_cd
-	li $s5, 25
+	li $s5, 1
 	# Init num_obst to 0
 	li $s4, 0
 	# Init HP
@@ -258,42 +258,29 @@ keyevent:	lw $t2, 4($t9)
 ke_d:	bge $s0, 122, key_end # Skip if x is already at right border
 	# Update coordinates
 	addi $s0, $s0, 1
-	move $a0, $s0
-	move $a1, $s1
-	li $a2, 3
+	li $a0, 3
+	move $a1, $s3
 	jal draw_plane
 	j key_end
 ke_a:	ble $s0, 5, key_end # Skip if x is already at left border
-	# Overwrite old coordinates
-	move $s2, $s0
-	move $s3, $s1
 	# Update coordinates
 	addi $s0, $s0, -1
-	move $a0, $s0
-	move $a1, $s1
-	li $a2, 2
+	li $a0, 2
+	move $a1, $s3
 	jal draw_plane
 	j key_end
 ke_s:	bge $s1, 122, key_end # Skip if y is already at bottom border
-	# Overwrite old coordinates
-	move $s2, $s0
-	move $s3, $s1
 	# Update coordinates
 	addi $s1, $s1, 1
-	move $a0, $s0
-	move $a1, $s1
-	li $a2, 1
+	li $a0, 1
+	move $a1, $s3
 	jal draw_plane
 	j key_end
 ke_w:	ble $s1, 35, key_end # Skip if y is already at top border
-	# Overwrite old coordinates
-	move $s2, $s0
-	move $s3, $s1
 	# Update coordinates
 	addi $s1, $s1, -1
-	move $a0, $s0
-	move $a1, $s1
-	li $a2, 0
+	li $a0, 0
+	move $a1, $s3
 	jal draw_plane
 	j key_end
 key_end:	
@@ -303,10 +290,11 @@ key_end:
 	# $t0 is temorarily used to skip if not alive (can be modified)
 	# $a0 and $a1 are the coordinates of the rock
 	# $a3 is used to let drawer know whether a rock should be erased
-	la $t6, OBSTS
+	
 	li $t5, 0
 move_start:
-	beq $t5, 40, move_end	# End loop if reached the end
+	la $t6, OBSTS
+	beq $t5, MAX_ROCK1, move_end	# End loop if reached the end
 	add $t6, $t6, $t5	# Shift pointer to the corrct index
 	# Load alive
 	lb $t0, 3($t6)
@@ -334,9 +322,8 @@ collision_happened:
 	jal draw_rock1
 	sb $zero, 3($t6)	# Set dead in memory
 	# Redraw plane
-	move $a0, $s0
-	move $a1, $s1
-	li $a2, -1
+	li $a0, -1
+	move $a1, $s3
 	jal draw_plane
 	addi $s4, $s4, -4	# Shrink num_obst
 	addi $s6, $s6, -1	# Deduct HP
@@ -360,14 +347,12 @@ spawn_start:
 	bgtz $s5, no_spawn		# Don't spawn if cd is not 0
 	# Do spawn a rock
 	# Find a dead element in the rock array
-	la $t0, OBSTS
-	li $t1, 0
+	la $t6, OBSTS
 find_dead_start:
-	add $t0, $t0, $t1	# Shift pointer to next index
-	lb $t2, 3($t0)
+	lb $t2, 3($t6)
 	beqz $t2, found_dead
-	addi $t1, $t1, 4	# Advance index
-	blt $t1, MAX_ROCK1, find_dead_start	# Spawn a rock at the end of the array no matter what.
+	addi $t6, $t6, 4	# Shift pointer to next index
+	j find_dead_start
 found_dead:
 	# Call RNG, decide the y coord for the rock
 	li $v0, 42
@@ -376,11 +361,11 @@ found_dead:
 	syscall
 	addi $a1, $a0, 35	# Shift the RN downward into the playground
 	li $a0, 122	# Load x coord for the rock
-	sb $a0, 0($t0)
-	sb $a1, 1($t0)
+	sb $a0, 0($t6)
+	sb $a1, 1($t6)
 	li $t1, 1		# Init speed and alive to 1
-	sb $t1, 2($t0)
-	sb $t1, 3($t0)
+	sb $t1, 2($t6)
+	sb $t1, 3($t6)
 	addi, $s4, $s4, 4	# Advance num_rocks
 	# Draw the rock
 	jal draw_rock1
@@ -390,6 +375,7 @@ found_dead:
 	li $a1, 10
 	syscall
 	addi, $s5, $a0, 5	# New rock spawn in 25 to 75 (2 to 3 sec)
+	#li $s5, 0
 	j spawn_end
 no_spawn:	
 	addi, $s5, $s5, -1	# Count down
@@ -497,28 +483,31 @@ coor_to_addr:
 	addi $v0, $a0, BASE_ADDRESS	# Actual memory address
 	jr $ra		# return
 
-# This function draws the player plane at (x, y) centralized. It takes three parameters: 
-# x, y, and movement, and uses register calling convention. Set movement to -1 to 
-# draw an entire plane. Set 0, 1, 2, 3 to indicate the plane has moved towards up, down,
-# left, or right, respectively. Set movement to -2 to skip drawing entirely.
-# This function only draws the difference between two frames.
+# This function draws the player plane at (x, y) centralized. It takes two parameters: 
+# movement($a0) and color($a1). Set movement to -1 to draw an entire plane. 
+# Set movement to 0, 1, 2, or 3 to indicate the plane has moved towards up, down,
+# left, or right, respectively. 
+# This function only draws the difference between two frames when possible.
 # This function modifies a lot of things, do not assume any perservation.
 draw_plane:
 	move $t8, $ra	# Move $ra away, this function calls many other functions
 	# Load color values
 	li $t0, DARK_GREY
-	li $t1, RED
+	move $t1, $a1
 	li $t2, YELLOW
 	li $t3, BLACK
 	# Check in which way should we draw this frame
-	beq $a2, -1, drawp_whole
-	beq $a2, -2, drawp_end
-	beq $a2, 2, delta_left
-	beq $a2, 3, delta_right
-	beq $a2, 1, delta_down
-	beq $a2, 0, delta_up
+	beq $a0, -1, drawp_whole
+	beq $a0, -2, drawp_end
+	beq $a0, 2, delta_left
+	beq $a0, 3, delta_right
+	beq $a0, 1, delta_down
+	beq $a0, 0, delta_up
 	j drawp_end
 delta_up:
+	# Carry current coord to $a0 and $a1. Prepare to convert to address.
+	move $a0, $s0
+	move $a1, $s1
 	jal coor_to_addr
 	# Draw new cockpit
 	sw $t0, 0($v0)
@@ -568,6 +557,9 @@ delta_up:
 	j drawp_end
 	
 delta_down:
+	# Carry current coord to $a0 and $a1. Prepare to convert to address.
+	move $a0, $s0
+	move $a1, $s1
 	jal coor_to_addr
 	# Draw new cockpit
 	sw $t0, 0($v0)
@@ -616,6 +608,9 @@ delta_down:
 	sw $t1, -8($a0)
 	j drawp_end
 delta_left:
+	# Carry current coord to $a0 and $a1. Prepare to convert to address.
+	move $a0, $s0
+	move $a1, $s1
 	jal coor_to_addr
 	# Redraw cockpit line
 	sw $t0, 0($v0)
@@ -657,6 +652,9 @@ delta_left:
 	j drawp_end
 
 delta_right:
+	# Carry current coord to $a0 and $a1. Prepare to convert to address.
+	move $a0, $s0
+	move $a1, $s1
 	jal coor_to_addr
 	# Redraw cockpit line
 	sw $t1, -4($v0)
@@ -699,6 +697,9 @@ delta_right:
 	
 drawp_whole:
 	# Get central address
+	# Carry current coord to $a0 and $a1. Prepare to convert to address.
+	move $a0, $s0
+	move $a1, $s1
 	jal coor_to_addr
 	# Draw cockpit
 	sw $t0 0($v0)
@@ -778,13 +779,13 @@ drawr1_full: # Draw rock 1 full
 	sw $t2, -4($a0)
 	sw $t2, 4($a0)	
 	addi $a0, $a0, WIDTH_ADDR
-	sw $t3, 0($v0)
+	sw $t3, 0($a0)
 	addi $a0, $v0, -WIDTH_ADDR
 	sw $t2, 0($a0)
 	sw $t2, -4($a0)
 	sw $t2, 4($a0)	
 	addi $a0, $a0, -WIDTH_ADDR
-	sw $t3, 0($v0)
+	sw $t3, 0($a0)
 	jr $t8
 drawr1_shift: # Draw rock 1 shift
 	li $t0, BLACK	# We need to erase things
@@ -913,8 +914,11 @@ draw_H:	move $t8, $ra
 	jr $t8
 draw_M:	move $t8, $ra
 	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 0($v0)
+	sw $a2, 4($v0)
 	sw $a2, 8($v0)
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 0($v0)
@@ -976,6 +980,8 @@ draw_R:	move $t8, $ra
 	jr $t8
 draw_V:	move $t8, $ra
 	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 0($v0)
 	sw $a2, 8($v0)
