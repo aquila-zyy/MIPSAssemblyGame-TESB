@@ -57,6 +57,18 @@ LAST_DEAD:	.word	0
 			# we remember the last item that is set to "dead". In case of a successful spawn,
 			# we advance this variable by 1 index, and carry around to 0 if it exceeds the 
 			# maximum index.
+			
+SCORE:		.half	0
+			# These two bytes stores the score. It uses a special structure to save
+			# the effort of converting binary value to decimal value (for printing)
+			# Each 4 bits represents a digit in decimal, for example:
+			# 0011 1011 0000 1001 represents 3709 points. Note: each digit is never 
+			# greater than 1001 (9). Note2: each digit shall use an unsigned value.
+
+SCORE_MODIFIED:	.byte	0
+			# This stores which digits in SCORE should be updated on screen this 
+			# frame.
+			
 
 .eqv	BASE_ADDRESS	0x10010000	# The top left of the map
 .eqv	PLAY_ADDRESS	0x10014410	# The top left of the actual game
@@ -65,7 +77,7 @@ LAST_DEAD:	.word	0
 .eqv	WIDTH_ADDR	512		# The amount of address shift between two neighbouring pixels
 					# on different rows.
 
-.eqv	MAX_ROCK1		15		# The maximum number of rock type 1 on screen simultaneously.
+.eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
 
 # Keys
 .eqv	KEY_DETECT	0xffff0000	# This address will be set to 1 if a key is pressed when syscalled
@@ -102,17 +114,22 @@ LAST_DEAD:	.word	0
 #   that we keep it in the register file.
 # $s5 is obstacle count down (obst_cd), the delay before another obstacle should spawn. Again, 
 #   we need to check it every frame so it'll be faster to not store it in memory.
+# $s6 is the maximum number of obstacles that are allowed on screen at the same time.
 
 main:	# Initialize the program.
 	move $fp, $sp	# Set frame pointer to the inital stack pointer.
+	
 	la $t0, OBSTS	# Set LAST_DEAD to the first item in OBSTS
 	la $t1, LAST_DEAD
 	sw $t0, 0($t1)
 	la $t2, OBSTS_END
+	
 	li $t1, MAX_ROCK1	# Calculate the end address of the OBSTS array.
 	sll $t1, $t1, 2	# Times 4, since each obst struct takes 4 bytes.
 	add $t1, $t1, $t0	# Add the starting address
 	sw $t1, 0($t2)
+	
+	li $s6, MAX_ROCK1
 	
 	jal draw_ui
 	
@@ -134,14 +151,21 @@ mainloop:
 	jal key_event
 	jal move_rocks
 	
-	bgtz $s5, no_spawn_yet
-	beq $s4, MAX_ROCK1, hold_spawn
+	bgtz $s5, no_spawn_yet	# Do not spwan if the countdown is not 0
+	beq $s4, $s6, hold_spawn	# Hold the spawn if there're more obstacles on
+				# screen than the maximum allowed number.
 	jal spawn_rock
 no_spawn_yet:
 	addi $s5, $s5, -1
 hold_spawn:
+	li $a0, 0
+	li $a1, 0
+	li $a2, 0
+	li $a3, 1
+	jal add_score
+	jal draw_score
 	li $v0, 32
-	li $a0, 20
+	li $a0, 10
 	syscall
 	j mainloop
 mainend:	
@@ -252,8 +276,6 @@ collision_happened:
 	la $t0, HP	# Load HP address into $t0
 	lb $t1, 0($t0)	# Load HP value into $t1
 	addi $t1, $t1, -1	# Deduct 1
-	# Check if the HP is 0, jump to game over if so.
-	beqz $t1, mainend
 	sb $t1, 0($t0)	# Save HP value back
 	# Shirnk HP bar visually
 	la $t0, HP_BAR	# Load HP_BAR, the x coordinates of the last pixel of the HP bar.
@@ -266,6 +288,10 @@ collision_happened:
 	li $a2, 5		# The height of the bar.
 	li $a3, BLACK	# Paint it black.
 	jal draw_vert 
+	# Check if the HP is 0, jump to game over if so.
+	la $t0, HP	# Load HP address into $t0
+	lb $t1, 0($t0)	# Load HP value into $t1
+	beqz $t1, mainend
 no_collision:
 	# Only now we pop $t0 and $t1
 	lw $t1, 0($sp)
@@ -438,19 +464,7 @@ dv_do:	sw $a3, 0($v0)	# Paint color to the map
 	addi $v0, $v0, WIDTH_ADDR	# Advance pointer
 	bgtz $t2, dv_do	# if k>0, loop
 	jr $ra	# return
-	
-## This function draws a horizontal line starting from some address x and k pixel right, with some 
-## color c.
-## @param const x=$a0, const k=$a2, const c=$a3
-#draw_hori_addr:
-#	# $t0 is address, $t2 is k, $a3 is color.
-#	move $t2, $a2
-#	move $t0, $a0
-#dha_do:	sw $a3, 0($t0)	# Paint color to the map
-#	addi $t2, $t2, -1	# k--
-#	addi $t0, $t0, 4	# Advance pointer
-#	bgtz $t2, dha_do	# if k>0, loop
-#	jr $ra	# return
+
 
 # This function converts a set of coordinates (x, y) to a memory address on the bit map, 
 # @param const $a0, the x coordinate on the map.
@@ -849,8 +863,72 @@ drawr1_end:
 	addi $sp, $sp, 4
 	jr $ra
 	
-	
-	
+# This function modifies SCORE. It takes for parameters ($a0, $a1, $a2, $a3) that stores the
+# Thousands digit, hundreds digit, tens digit and ones digit of the amount of bonus score this 
+# function should add to SCORE. Note: this function expects that all of the digits are less or
+# equal to 1001 (9).
+# @param $a0, the thousands digit of the bonus.
+# @param $a1, the hundreds digit of the bonus.
+# @param $a2, the tens digit of the bonus.
+# @param $a3, the ones digit of the bonus.
+add_score:
+	# Load SCORE into $t0 to $t3
+	la $t4, SCORE	# AAAABBBB CCCCDDDD
+	lbu $t1, 0($t4)	# $t1 <- AAAABBBB
+	lbu $t3, 1($t4)	# $t3 <- CCCCDDDD
+	srl $t0, $t1, 4	# $t0 <- 0000AAAA
+	srl $t2, $t3, 4	# $t2 <- 0000CCCC
+	andi $t1, $t1, 15	# $t1 <- 0000BBBB
+	andi $t3, $t3, 15	# $t3 <- 0000DDDD
+	# Init $t5 to store which digits will have been modified.
+	la $t6, SCORE_MODIFIED
+	lbu $t5, 0($t6)
+	beq $a3, 0, no_mod_ones
+	ori $t5, $t5, 1
+no_mod_ones:
+	beq $a2, 0, no_mod_tens
+	ori $t5, $t5, 2
+no_mod_tens:
+	beq $a1, 0, no_mod_hundreds
+	ori $t5, $t5, 4
+no_mod_hundreds:
+	beq $a0, 0, no_mod_thousands
+	ori $t5, $t5, 8
+no_mod_thousands:
+	# Add bonus to $t0 to $t3
+	add $t3, $t3, $a3
+	add $t2, $t2, $a2
+	add $t1, $t1, $a1
+	add $t0, $t0, $a0
+	# Carry the digits
+	blt $t3, 10, no_carry_ones
+	addi $t3, $t3, -10
+	addi $t2, $t2, 1
+	ori $t5, $t5, 2
+no_carry_ones:
+	blt $t2, 10, no_carry_tens
+	addi $t2, $t2, -10
+	addi $t1, $t1, 1
+	ori $t5, $t5, 4
+no_carry_tens:
+	blt $t1, 10, no_carry_hundreds
+	addi $t1, $t1, -10
+	addi $t0, $t0, 1
+	ori $t5, $t5, 8
+no_carry_hundreds:
+	blt $t0, 10, no_carry_thousands
+	addi $t0, $t0, -10	# After 9999, is 0000
+no_carry_thousands:
+	# Now, store each digit back
+	sll $t0, $t0, 4	# $t0 <- AAAA0000
+	sll $t2, $t2, 4	# $t2 <- CCCC0000
+	or $t0, $t0, $t1	# $t0 <- AAAABBBB
+	or $t2, $t2, $t3	# $t2 <- CCCCDDDD
+	sb $t0, 0($t4)
+	sb $t2, 1($t4)
+	# Also store $t5 to SCORE_MODIFIED
+	sb $t5, 0($t6)
+	jr $ra
 draw_ui:
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
@@ -953,7 +1031,6 @@ draw_ui:
 	li $a2, RED
 	jal draw_H
 	li $a0, 10
-	li $a1, 21
 	jal draw_P
 	# Draw HP bar
 	li $a0, 14
@@ -969,12 +1046,134 @@ draw_ui:
 	jal draw_hori
 	li $a1, 25
 	jal draw_hori
+	# Draw "SCORE: "
+	li $a0, 83
+	li $a1, 21
+	li $a2, RED
+	jal draw_S
+	li $a0, 87
+	jal draw_C
+	li $a0, 91
+	jal draw_O
+	li $a0, 95
+	jal draw_R
+	li $a0, 99
+	jal draw_E
+	li $a0, 103
+	jal draw_COLON
+	# Draw " 0000"
+	li $a0, 107
+	jal draw_0
+	li $a0, 111
+	jal draw_0
+	li $a0, 115
+	jal draw_0
+	li $a0, 119
+	jal draw_0
+	
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
+draw_score:
+	# Push $ra to stack
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	# Load SCORE into $t0 to $t3
+	la $t4, SCORE	# AAAABBBB CCCCDDDD
+	lbu $t1, 0($t4)	# $t1 <- AAAABBBB
+	lbu $t3, 1($t4)	# $t3 <- CCCCDDDD
+	srl $t0, $t1, 4	# $t0 <- 0000AAAA
+	srl $t2, $t3, 4	# $t2 <- 0000CCCC
+	andi $t1, $t1, 15	# $t1 <- 0000BBBB
+	andi $t3, $t3, 15	# $t3 <- 0000DDDD
+	# Load SCORE_MODIFIED into $t5
+	la $t6, SCORE_MODIFIED
+	lbu $t5, 0($t6)
+	andi $t7, $t5, 1
+	# Init y coord
+	li $a1, 21
+	# Init color
+	li $a2, RED
+	beqz $t7, no_update_ones
+	# Draw ones digit
+	move $a3, $t3
+	li $a0, 119
+	jal draw_VOID
+	jal draw_digit
+no_update_ones:
+	andi $t7, $t5, 2
+	beqz $t7, no_update_tens
+	# Draw tens digit
+	move $a3, $t2
+	li $a0, 115
+	jal draw_VOID
+	jal draw_digit
+no_update_tens:
+	andi $t7, $t5, 4
+	beqz $t7, no_update_hundreds
+	# Draw hundreds digit
+	move $a3, $t1
+	li $a0, 111
+	jal draw_VOID
+	jal draw_digit
+no_update_hundreds:
+	andi $t7, $t5, 8
+	beqz $t7, no_update_thousands
+	# Draw thousands digit
+	move $a3, $t0
+	li $a0, 107
+	jal draw_VOID
+	jal draw_digit
+no_update_thousands:
+	# Reset SCORE_MODIFIED to 0
+	sb $zero 0($t6)
+	# Pop $ra from stack
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+
+draw_digit:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	beq $a3, 0, drawd0
+	beq $a3, 1, drawd1
+	beq $a3, 2, drawd2
+	beq $a3, 3, drawd3
+	beq $a3, 4, drawd4
+	beq $a3, 5, drawd5
+	beq $a3, 6, drawd6
+	beq $a3, 7, drawd7
+	beq $a3, 8, drawd8
+	beq $a3, 9, drawd9
+drawd0:	jal draw_0
+	j drawd_end
+drawd1:	jal draw_1
+	j drawd_end
+drawd2:	jal draw_2
+	j drawd_end
+drawd3:	jal draw_3
+	j drawd_end
+drawd4:	jal draw_4
+	j drawd_end
+drawd5:	jal draw_5
+	j drawd_end
+drawd6:	jal draw_6
+	j drawd_end
+drawd7:	jal draw_7
+	j drawd_end
+drawd8:	jal draw_8
+	j drawd_end
+drawd9:	jal draw_9
+	j drawd_end
+drawd_end:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
 	
 # ========== Draw letters and numbers ==========
-draw_A:	move $t8, $ra
+draw_A:	addi $sp, $sp, -4
+	sw $ra 0($sp)
 	jal coor_to_addr
 	sw $a2, 4($v0)
 	addi $v0, $v0, WIDTH_ADDR
@@ -990,8 +1189,28 @@ draw_A:	move $t8, $ra
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 0($v0)
 	sw $a2, 8($v0)
-	jr $t8
-draw_E:	move $t8, $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_C:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_E:	addi $sp, $sp, -4
+	sw $ra 0($sp)
 	jal coor_to_addr
 	sw $a2, 0($v0)
 	sw $a2, 4($v0)
@@ -1007,8 +1226,11 @@ draw_E:	move $t8, $ra
 	sw $a2, 0($v0)
 	sw $a2, 4($v0)
 	sw $a2, 8($v0)
-	jr $t8
-draw_G:	move $t8, $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_G:	addi $sp, $sp, -4
+	sw $ra 0($sp)
 	jal coor_to_addr
 	sw $a2, 4($v0)
 	sw $a2, 8($v0)
@@ -1022,8 +1244,11 @@ draw_G:	move $t8, $ra
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 4($v0)
 	sw $a2, 8($v0)
-	jr $t8
-draw_H:	move $t8, $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_H:	addi $sp, $sp, -4
+	sw $ra 0($sp)
 	jal coor_to_addr
 	sw $a2, 0($v0)
 	sw $a2, 8($v0)
@@ -1040,8 +1265,11 @@ draw_H:	move $t8, $ra
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 0($v0)
 	sw $a2, 8($v0)
-	jr $t8
-draw_M:	move $t8, $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_M:	addi $sp, $sp, -4
+	sw $ra 0($sp)
 	jal coor_to_addr
 	sw $a2, 0($v0)
 	sw $a2, 8($v0)
@@ -1059,8 +1287,11 @@ draw_M:	move $t8, $ra
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 0($v0)
 	sw $a2, 8($v0)
-	jr $t8
-draw_O:	move $t8, $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_O:	addi $sp, $sp, -4
+	sw $ra 0($sp)
 	jal coor_to_addr
 	sw $a2, 4($v0)
 	addi $v0, $v0, WIDTH_ADDR
@@ -1074,8 +1305,11 @@ draw_O:	move $t8, $ra
 	sw $a2, 8($v0)
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 4($v0)
-	jr $t8
-draw_P:	move $t8, $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_P:	addi $sp, $sp, -4
+	sw $ra 0($sp)
 	jal coor_to_addr
 	sw $a2, 0($v0)
 	sw $a2, 4($v0)
@@ -1089,8 +1323,11 @@ draw_P:	move $t8, $ra
 	sw $a2, 0($v0)
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 0($v0)
-	jr $t8
-draw_R:	move $t8, $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_R:	addi $sp, $sp, -4
+	sw $ra 0($sp)
 	jal coor_to_addr
 	sw $a2, 0($v0)
 	sw $a2, 4($v0)
@@ -1106,8 +1343,29 @@ draw_R:	move $t8, $ra
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 0($v0)
 	sw $a2, 8($v0)
-	jr $t8
-draw_V:	move $t8, $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_S:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	move $t8, $ra
+	jal coor_to_addr
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_V:	addi $sp, $sp, -4
+	sw $ra 0($sp)
 	jal coor_to_addr
 	sw $a2, 0($v0)
 	sw $a2, 8($v0)
@@ -1122,7 +1380,254 @@ draw_V:	move $t8, $ra
 	sw $a2, 8($v0)
 	addi $v0, $v0, WIDTH_ADDR
 	sw $a2, 4($v0)
-	jr $t8
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_0:
+	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_1:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_2:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_3:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_4:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_5:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_6:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_7:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_8:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_9:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_COLON:
+	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	addi $v0, $v0, WIDTH_ADDR
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+draw_VOID:
+	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $zero, 0($v0)
+	sw $zero, 4($v0)
+	sw $zero, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $zero, 0($v0)
+	sw $zero, 4($v0)
+	sw $zero, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $zero, 0($v0)
+	sw $zero, 4($v0)
+	sw $zero, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $zero, 0($v0)
+	sw $zero, 4($v0)
+	sw $zero, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $zero, 0($v0)
+	sw $zero, 4($v0)
+	sw $zero, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+
 
 
 
