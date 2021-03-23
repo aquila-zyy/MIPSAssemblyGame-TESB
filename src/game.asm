@@ -46,6 +46,8 @@ OBSTS:	.byte	0:60	# struct obst {
 
 HP:	.byte	10	# This is the player's HP
 HP_BAR:	.byte	23	# The x coord of the last pixel of the HP_BAR (y is 21)
+SP:	.byte	5	# This is the player's Shield Point
+SP_BAR:	.byte	18	# The x coord of the last pixel of the SP_BAR (y is 15)
 
 OBSTS_END:	.word	0
 			# This is an optimization. Instead of calculating the end point of the OBSTS array
@@ -76,8 +78,9 @@ SCORE_MODIFIED:	.byte	0
 .eqv	HEIGHT		128
 .eqv	WIDTH_ADDR	512		# The amount of address shift between two neighbouring pixels
 					# on different rows.
-
+# Game mechanics
 .eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
+.eqv	IFPS		5		# Inverse of FPS
 
 # Keys
 .eqv	KEY_DETECT	0xffff0000	# This address will be set to 1 if a key is pressed when syscalled
@@ -108,6 +111,8 @@ SCORE_MODIFIED:	.byte	0
 
 # $s0 and $s1 are the (x, y) coordinates of the player. Try not to move them since they 
 #   come quite handy as global variables.
+# $s2 is the shield regeneration counter. After 500 ticks of not taking any damage the 
+#   shield will start to regenerate 1 pointer every 50 ticks.
 # $s3 is the color of the plane. We need to read the color every time we need to repaint the
 # plane so it's faster to not store it in memory.
 # $s4 is number of obstacles on screen. Since we need to check it every frame, it's better
@@ -130,6 +135,7 @@ main:	# Initialize the program.
 	add $t1, $t1, $t0	# Add the starting address
 	sw $t1, 0($t2)
 	
+	li $s2, 500
 	li $s6, MAX_ROCK1
 	li $s7, 0
 	
@@ -138,9 +144,10 @@ main:	# Initialize the program.
 	# Draw player plane
 	li $s0, 5
 	li $s1, 79
-	li $s3, RED	# Default color is red
+	#li $s3, RED	# Default color is red
+	li $s3, 0x00545454
 	li $a0, -1	# Draw all, not only the shifted.
-	move $a1, $s3	# Red
+	move $a1, $s3
 	jal draw_plane
 
 	# Init obst_cd
@@ -184,8 +191,25 @@ hold_spawn:
 	addi $t1, $t1, 4
 	sw $t1, 0($t0)
 no_increase_difficulty:
+	bgtz $s2, no_regenerate
+	la $t0, SP
+	lb $t1, 0($t0)
+	bge $t1, 5, no_regenerate
+	addi $t1, $t1, 1
+	sb $t1, 0($t0)
+	la $t0, SP_BAR
+	lb $a0, 0($t0)
+	addi $a0, $a0, 1
+	sb $a0, 0($t0)
+	li $a1, 15
+	li $a2, 5
+	li $a3, CYAN
+	jal draw_vert
+	li $s2, 51
+no_regenerate:
+	addi $s2, $s2, -1
 	li $v0, 32
-	li $a0, 10
+	li $a0, IFPS
 	syscall
 	j mainloop
 mainend:	
@@ -289,9 +313,53 @@ collision_happened:
 	jal draw_rock1
 	# Redraw plane since we might have erased some part of the plane along with the rock.
 	li $a0, -1
-	move $a1, $s3
 	jal draw_plane
 	addi $s4, $s4, -1	# Shrink num_obst
+	jal handle_damage
+	# Check if the HP is 0, jump to game over if so.
+	la $t0, HP	# Load HP address into $t0
+	lb $t1, 0($t0)	# Load HP value into $t1
+	beqz $t1, mainend
+no_collision:
+	# Only now we pop $t0 and $t1
+	lw $t1, 0($sp)
+	lw $t0, 4($sp)
+	addi $sp, $sp, 8
+move_skip:
+	addi $t0, $t0, 4	# Advance address
+	j move_loop
+move_end:
+	# Pop $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
+# This function handles the visual and logical effects when player takes a hit.
+# When there's shield left, deduct 1 SP from the SP bar. Otherwise, deduct
+# 1 HP from the HP bar. Whichever is deducted, reset the hit_counter ($s2)
+# to some value so that the shield will stop regenerating.
+handle_damage:
+	# Push $ra on stack
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	# Check SP
+	la $t0, SP
+	lb $t1, 0($t0)
+	beqz $t1, deduct_HP
+	# Deduct SP
+	addi $t1, $t1, -1
+	sb $t1, 0($t0)
+	la $t0, SP_BAR
+	lb $a0, 0($t0)
+	addi $a0, $a0, -1
+	sb $a0, 0($t0)
+	addi $a0, $a0, 1
+	li $a1, 15
+	li $a2, 5
+	li $a3, BLACK
+	jal draw_vert
+	j damage_end
+deduct_HP:
 	# Deduct HP
 	la $t0, HP	# Load HP address into $t0
 	lb $t1, 0($t0)	# Load HP value into $t1
@@ -308,20 +376,9 @@ collision_happened:
 	li $a2, 5		# The height of the bar.
 	li $a3, BLACK	# Paint it black.
 	jal draw_vert 
-	# Check if the HP is 0, jump to game over if so.
-	la $t0, HP	# Load HP address into $t0
-	lb $t1, 0($t0)	# Load HP value into $t1
-	beqz $t1, mainend
-no_collision:
-	# Only now we pop $t0 and $t1
-	lw $t1, 0($sp)
-	lw $t0, 4($sp)
-	addi $sp, $sp, 8
-move_skip:
-	addi $t0, $t0, 4	# Advance address
-	j move_loop
-move_end:
-	# Pop $ra
+damage_end:
+	li $s2, 500
+	# Pops $ra
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
@@ -506,6 +563,7 @@ coor_to_addr:
 # @param const $a0, the direction that the plane has moved since the last frame.
 # @param const $a1, the color of the main part of the plane.
 draw_plane:
+	j draw_falcon
 	# Push $ra to stack. We need to nest functions here.
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
@@ -849,7 +907,7 @@ no_collide2: # Test end 2
 	sw $t0, 4($t4)
 	# Test collision on right point
 	lw $t3, -4($t4)
-	bne $t3, RED, no_collide3
+	bne $t3, $s3, no_collide3
 	li $v1, 1
 no_collide3: # Test end 3
 	sw $t2, 0($t4)
@@ -1090,6 +1148,26 @@ draw_ui:
 	jal draw_0
 	li $a0, 119
 	jal draw_0
+	# Draw "SP"
+	li $a0, 6
+	li $a1, 15
+	li $a2, CYAN
+	jal draw_S
+	li $a0, 10
+	jal draw_P
+	# Draw SP bar
+	li $a0, 14
+	li $a1, 15
+	li $a2, 5
+	li $a3, CYAN
+	jal draw_hori
+	li $a1, 16
+	jal draw_hori
+	li $a1, 17
+	jal draw_hori
+	li $a1, 18
+	jal draw_hori
+	li $a1, 19
 	
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
@@ -1678,7 +1756,177 @@ draw_VOID:
 	jr $ra
 
 
-
-
-
-
+# Falcon
+draw_falcon:
+	add $sp, $sp, -8
+	sw $ra, 4($sp)
+	sw $a0, 0($sp)
+	move $a0, $s0
+	move $a1, $s1
+	jal coor_to_addr
+	
+	lw $a0, 0($sp)
+	addi $sp, $sp, 4
+	move $t0, $v0
+	beq $a0, 0, deltaf_up
+	beq $a0, 1, deltaf_down
+	beq $a0, 2, deltaf_left
+	beq $a0, 3, deltaf_right
+	beq $a0, -1, falcon_draw
+	j prog_end	# Break program to signify an error
+deltaf_up:
+	sw $zero, 16($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, -16($t0)
+	sw $zero, 12($t0)
+	sw $zero, 16($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, -12($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, 4($t0)
+	sw $zero, 8($t0)
+	sw $zero, 12($t0)
+	sw $zero, -8($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, 0($t0)
+	sw $zero, -4($t0)
+	j falcon_draw
+deltaf_down:
+	sw $zero, 16($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, 12($t0)
+	addi $t0, $v0, -WIDTH_ADDR
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, -16($t0)
+	sw $zero, 12($t0)
+	sw $zero, 16($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, -12($t0)
+	sw $zero, 8($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, 4($t0)
+	sw $zero, -8($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, 0($t0)
+	sw $zero, -4($t0)
+	j falcon_draw
+deltaf_left:
+	sw $zero, 16($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, 20($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, 12($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, 8($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, 4($t0)
+	addi $t0, $v0, WIDTH_ADDR
+	sw $zero, 20($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, 12($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, 16($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, 4($t0)
+	j falcon_draw
+deltaf_right:
+	sw $zero, -20($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, -20($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, -16($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, -12($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, -8($t0)
+	addi $t0, $v0, WIDTH_ADDR
+	sw $zero, -20($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, -16($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, -12($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, -8($t0)
+	j falcon_draw
+falcon_draw:
+	li $t1, 0x00545454	# Border black
+	li $t2, 0x00c8c8c8	# Dark grey
+	li $t3, 0x00d3d3d3	# Grey
+	li $t4, 0xffffffff	# Light grey
+	li $t5, 0x0064647e	# Dark blue
+	li $t6, 0x008d8db3	# Light blue
+	
+	move $t0, $v0	
+	sw $t5, 0($t0)
+	sw $t1, 4($t0)
+	sw $t6, 8($t0)
+	sw $t6, 12($t0)
+	sw $t6, -4($t0)
+	sw $t4, -8($t0)
+	sw $t4, -12($t0)
+	sw $t1, -16($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t5, 0($t0)
+	sw $t2, 4($t0)
+	sw $t3, 8($t0)
+	sw $t1, 12($t0)
+	sw $t1, 16($t0)
+	sw $t6, -4($t0)
+	sw $t4, -8($t0)
+	sw $t6, -12($t0)
+	sw $t1, -16($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t5, 0($t0)
+	sw $t2, 4($t0)
+	sw $t1, 8($t0)
+	sw $t6, -4($t0)
+	sw $t2, -8($t0)
+	sw $t1, -12($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t5, 0($t0)
+	sw $t6, -4($t0)
+	sw $t1, -8($t0)
+	sw $t1, 4($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t1, 0($t0)
+	sw $t1, -4($t0)
+	# Another side
+	addi $t0, $v0, WIDTH_ADDR
+	sw $t2, 0($t0)
+	sw $t2, 4($t0)
+	sw $t3, 8($t0)
+	sw $t1, 12($t0)
+	sw $t1, 16($t0)
+	sw $t6, -4($t0)
+	sw $t4, -8($t0)
+	sw $t6, -12($t0)
+	sw $t1, -16($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t5, 0($t0)
+	sw $t4, 4($t0)
+	sw $t1, 8($t0)
+	sw $t6, -4($t0)
+	sw $t2, -8($t0)
+	sw $t1, -12($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t5, 0($t0)
+	sw $t1, 4($t0)
+	sw $t4, 8($t0)
+	sw $t6, 12($t0)
+	sw $t6, -4($t0)
+	sw $t1, -8($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t1, -4($t0)
+	sw $t1, 0($t0)
+falcon_end:
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
+	
+	
+	
+	
+	
