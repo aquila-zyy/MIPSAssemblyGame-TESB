@@ -115,6 +115,7 @@ SCORE_MODIFIED:	.byte	0
 # $s5 is obstacle count down (obst_cd), the delay before another obstacle should spawn. Again, 
 #   we need to check it every frame so it'll be faster to not store it in memory.
 # $s6 is the maximum number of obstacles that are allowed on screen at the same time.
+# $s7 is the score (in binary).
 
 main:	# Initialize the program.
 	move $fp, $sp	# Set frame pointer to the inital stack pointer.
@@ -130,6 +131,7 @@ main:	# Initialize the program.
 	sw $t1, 0($t2)
 	
 	li $s6, MAX_ROCK1
+	li $s7, 0
 	
 	jal draw_ui
 	
@@ -152,18 +154,36 @@ mainloop:
 	jal move_rocks
 	
 	bgtz $s5, no_spawn_yet	# Do not spwan if the countdown is not 0
+	
 	beq $s4, $s6, hold_spawn	# Hold the spawn if there're more obstacles on
 				# screen than the maximum allowed number.
 	jal spawn_rock
-no_spawn_yet:
-	addi $s5, $s5, -1
-hold_spawn:
 	li $a0, 0
 	li $a1, 0
 	li $a2, 0
-	li $a3, 1
+	li $a3, 5
 	jal add_score
+	addi $s7, $s7, 5
 	jal draw_score
+no_spawn_yet:
+	addi $s5, $s5, -1
+hold_spawn:
+	# Increase difficulty for each 128 + 5 * num_obst points the player get.
+	addi $t0, $s6, -MAX_ROCK1
+	addi $t0, $t0, 1
+	sll $t0, $t0, 7	# Multiply by 128
+	mul $t1, $s4, 5
+	add $t0, $t0, $t1
+	blt $s7, $t0, no_increase_difficulty
+	beq $s6, 15, no_increase_difficulty	# We've only allocated 15 indices for OBSTS
+	# Increase max_obst
+	addi $s6, $s6, 1
+	# Shift OBSTS_END
+	la $t0, OBSTS_END
+	lw $t1, 0($t0)
+	addi $t1, $t1, 4
+	sw $t1, 0($t0)
+no_increase_difficulty:
 	li $v0, 32
 	li $a0, 10
 	syscall
@@ -1079,6 +1099,12 @@ draw_score:
 	# Push $ra to stack
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
+	# Push previous $fp to stack, set current $fp
+	addi $sp, $sp, -4
+	sw $fp, 0($sp)
+	move $fp, $sp
+	# Allocate memory for local variables
+	addi $sp, $sp, -20
 	# Load SCORE into $t0 to $t3
 	la $t4, SCORE	# AAAABBBB CCCCDDDD
 	lbu $t1, 0($t4)	# $t1 <- AAAABBBB
@@ -1087,20 +1113,31 @@ draw_score:
 	srl $t2, $t3, 4	# $t2 <- 0000CCCC
 	andi $t1, $t1, 15	# $t1 <- 0000BBBB
 	andi $t3, $t3, 15	# $t3 <- 0000DDDD
+	sw $t0, -4($fp)
+	sw $t1, -8($fp)
+	sw $t2, -12($fp)
+	sw $t3, -16($fp)
 	# Load SCORE_MODIFIED into $t5
 	la $t6, SCORE_MODIFIED
 	lbu $t5, 0($t6)
-	andi $t7, $t5, 1
+	sw $t5, -20($fp)
 	# Init y coord
 	li $a1, 21
 	# Init color
 	li $a2, RED
+	
+	
+	andi $t7, $t5, 1
 	beqz $t7, no_update_ones
 	# Draw ones digit
 	move $a3, $t3
 	li $a0, 119
 	jal draw_VOID
 	jal draw_digit
+	lw $t0, -4($fp)
+	lw $t1, -8($fp)
+	lw $t2, -12($fp)
+	lw $t5, -20($fp)
 no_update_ones:
 	andi $t7, $t5, 2
 	beqz $t7, no_update_tens
@@ -1109,6 +1146,9 @@ no_update_ones:
 	li $a0, 115
 	jal draw_VOID
 	jal draw_digit
+	lw $t0, -4($fp)
+	lw $t1, -8($fp)
+	lw $t5, -20($fp)
 no_update_tens:
 	andi $t7, $t5, 4
 	beqz $t7, no_update_hundreds
@@ -1117,6 +1157,8 @@ no_update_tens:
 	li $a0, 111
 	jal draw_VOID
 	jal draw_digit
+	lw $t0, -4($fp)
+	lw $t5, -20($fp)
 no_update_hundreds:
 	andi $t7, $t5, 8
 	beqz $t7, no_update_thousands
@@ -1128,6 +1170,12 @@ no_update_hundreds:
 no_update_thousands:
 	# Reset SCORE_MODIFIED to 0
 	sb $zero 0($t6)
+	
+	# Free local variables
+	addi $sp, $sp, 20
+	# Load previous stack frame
+	lw $fp, 0($sp)
+	addi $sp, $sp, 4
 	# Pop $ra from stack
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
@@ -1146,6 +1194,7 @@ draw_digit:
 	beq $a3, 7, drawd7
 	beq $a3, 8, drawd8
 	beq $a3, 9, drawd9
+	j prog_end	# Break the program to signify an error.
 drawd0:	jal draw_0
 	j drawd_end
 drawd1:	jal draw_1
