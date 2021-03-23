@@ -45,9 +45,9 @@ OBSTS:	.byte	0:60	# struct obst {
 			# We can have at most 10 obstacles simultaneously.
 
 HP:	.byte	10	# This is the player's HP
-HP_BAR:	.byte	23	# The x coord of the last pixel of the HP_BAR (y is 21)
+HP_BAR:	.byte	43	# The x coord of the last pixel of the HP_BAR (y is 21)
 SP:	.byte	5	# This is the player's Shield Point
-SP_BAR:	.byte	18	# The x coord of the last pixel of the SP_BAR (y is 15)
+SP_BAR:	.byte	28	# The x coord of the last pixel of the SP_BAR (y is 15)
 
 OBSTS_END:	.word	0
 			# This is an optimization. Instead of calculating the end point of the OBSTS array
@@ -71,6 +71,9 @@ SCORE_MODIFIED:	.byte	0
 			# This stores which digits in SCORE should be updated on screen this 
 			# frame.
 			
+HIT:		.half	0
+HIT_MODIFIED:	.byte	0
+			
 
 .eqv	BASE_ADDRESS	0x10010000	# The top left of the map
 .eqv	PLAY_ADDRESS	0x10014410	# The top left of the actual game
@@ -80,7 +83,7 @@ SCORE_MODIFIED:	.byte	0
 					# on different rows.
 # Game mechanics
 .eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
-.eqv	IFPS		5		# Inverse of FPS
+.eqv	IFPS		15		# Inverse of FPS
 
 # Keys
 .eqv	KEY_DETECT	0xffff0000	# This address will be set to 1 if a key is pressed when syscalled
@@ -125,15 +128,48 @@ SCORE_MODIFIED:	.byte	0
 main:	# Initialize the program.
 	move $fp, $sp	# Set frame pointer to the inital stack pointer.
 	
+restart:	
 	la $t0, OBSTS	# Set LAST_DEAD to the first item in OBSTS
 	la $t1, LAST_DEAD
 	sw $t0, 0($t1)
 	la $t2, OBSTS_END
-	
 	li $t1, MAX_ROCK1	# Calculate the end address of the OBSTS array.
 	sll $t1, $t1, 2	# Times 4, since each obst struct takes 4 bytes.
 	add $t1, $t1, $t0	# Add the starting address
 	sw $t1, 0($t2)
+	sw $zero, 0($t0)
+	sw $zero, 4($t0)
+	sw $zero, 8($t0)
+	sw $zero, 12($t0)
+	sw $zero, 16($t0)
+	sw $zero, 20($t0)
+	sw $zero, 24($t0)
+	sw $zero, 28($t0)
+	sw $zero, 32($t0)
+	sw $zero, 36($t0)
+	sw $zero, 40($t0)
+	sw $zero, 44($t0)
+	sw $zero, 48($t0)
+	sw $zero, 52($t0)
+	sw $zero, 56($t0)
+	
+	la $t0, SCORE
+	sh $zero, 0($t0)
+	la $t0, HIT
+	sh $zero, 0($t0)
+	la $t0, HP
+	li $t1, 10
+	sb $t1, 0($t0)
+	la $t0, HP_BAR
+	li $t1, 43
+	sb $t1, 0($t0)
+	la $t0, SP
+	li $t1, 5
+	sb $t1, 0($t0)
+	la $t0, SP_BAR
+	li $t1, 28
+	sb $t1, 0($t0)
+	
 	
 	li $s2, 500
 	li $s6, MAX_ROCK1
@@ -145,7 +181,7 @@ main:	# Initialize the program.
 	li $s0, 5
 	li $s1, 79
 	#li $s3, RED	# Default color is red
-	li $s3, 0x00545454
+	li $s3, 0x00c8c8c8
 	li $a0, -1	# Draw all, not only the shifted.
 	move $a1, $s3
 	jal draw_plane
@@ -199,11 +235,15 @@ no_increase_difficulty:
 	sb $t1, 0($t0)
 	la $t0, SP_BAR
 	lb $a0, 0($t0)
-	addi $a0, $a0, 1
+	addi $a0, $a0, 3
 	sb $a0, 0($t0)
 	li $a1, 15
 	li $a2, 5
 	li $a3, CYAN
+	jal draw_vert
+	addi $a0, $a0, -1
+	jal draw_vert
+	addi $a0, $a0, -1
 	jal draw_vert
 	li $s2, 51
 no_regenerate:
@@ -316,6 +356,12 @@ collision_happened:
 	jal draw_plane
 	addi $s4, $s4, -1	# Shrink num_obst
 	jal handle_damage
+	li $a0, 0
+	li $a1, 0
+	li $a2, 0
+	li $a3, 1
+	jal add_hit
+	jal draw_hit
 	# Check if the HP is 0, jump to game over if so.
 	la $t0, HP	# Load HP address into $t0
 	lb $t1, 0($t0)	# Load HP value into $t1
@@ -351,12 +397,16 @@ handle_damage:
 	sb $t1, 0($t0)
 	la $t0, SP_BAR
 	lb $a0, 0($t0)
-	addi $a0, $a0, -1
+	addi $a0, $a0, -3
 	sb $a0, 0($t0)
 	addi $a0, $a0, 1
 	li $a1, 15
 	li $a2, 5
 	li $a3, BLACK
+	jal draw_vert
+	addi $a0, $a0, 1
+	jal draw_vert
+	addi $a0, $a0, 1
 	jal draw_vert
 	j damage_end
 deduct_HP:
@@ -368,13 +418,17 @@ deduct_HP:
 	# Shirnk HP bar visually
 	la $t0, HP_BAR	# Load HP_BAR, the x coordinates of the last pixel of the HP bar.
 	lb $a0, 0($t0)
-	addi $a0, $a0, -1
+	addi $a0, $a0, -3
 	sb $a0, 0($t0)	# Update x in memory
 	# Erase the last column of the HP bar
 	addi $a0, $a0, 1	# Set x to what it was.
 	li $a1, 21	# The pre-calculated y coordinate.
 	li $a2, 5		# The height of the bar.
 	li $a3, BLACK	# Paint it black.
+	jal draw_vert
+	addi $a0, $a0, 1	# Set x to what it was.
+	jal draw_vert
+	addi $a0, $a0, 1	# Set x to what it was.
 	jal draw_vert 
 damage_end:
 	li $s2, 500
@@ -470,6 +524,7 @@ key_event:
 	beq $t2, KEY_S, ke_s
 	beq $t2, KEY_A, ke_a
 	beq $t2, KEY_W, ke_w
+	beq $t2, KEY_P, ke_p
 	j key_end		# Skip if the key being pressed down isn't functional.
 ke_d:	bge $s0, 122, key_end # Skip if x is already at right border
 	# Update coordinates
@@ -498,6 +553,9 @@ ke_w:	ble $s1, 35, key_end # Skip if y is already at top border
 	li $a0, 0
 	move $a1, $s3
 	jal draw_plane
+	j key_end
+ke_p:	addi $sp, $sp, 4
+	j PAINT_BLACK_SCREEN
 key_end:	# Pop back $ra
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
@@ -950,8 +1008,16 @@ drawr1_end:
 # @param $a2, the tens digit of the bonus.
 # @param $a3, the ones digit of the bonus.
 add_score:
-	# Load SCORE into $t0 to $t3
-	la $t4, SCORE	# AAAABBBB CCCCDDDD
+	la $t4, SCORE
+	la $t6, SCORE_MODIFIED
+	j add_to_digit
+add_hit:
+	la $t4, HIT
+	la $t6, HIT_MODIFIED
+	j add_to_digit
+
+add_to_digit:
+	# Load old digits into $t0 to $t3
 	lbu $t1, 0($t4)	# $t1 <- AAAABBBB
 	lbu $t3, 1($t4)	# $t3 <- CCCCDDDD
 	srl $t0, $t1, 4	# $t0 <- 0000AAAA
@@ -959,7 +1025,6 @@ add_score:
 	andi $t1, $t1, 15	# $t1 <- 0000BBBB
 	andi $t3, $t3, 15	# $t3 <- 0000DDDD
 	# Init $t5 to store which digits will have been modified.
-	la $t6, SCORE_MODIFIED
 	lbu $t5, 0($t6)
 	beq $a3, 0, no_mod_ones
 	ori $t5, $t5, 1
@@ -1113,7 +1178,7 @@ draw_ui:
 	# Draw HP bar
 	li $a0, 14
 	li $a1, 21
-	li $a2, 10
+	li $a2, 30
 	li $a3, RED
 	jal draw_hori
 	li $a1, 22
@@ -1158,7 +1223,7 @@ draw_ui:
 	# Draw SP bar
 	li $a0, 14
 	li $a1, 15
-	li $a2, 5
+	li $a2, 15
 	li $a3, CYAN
 	jal draw_hori
 	li $a1, 16
@@ -1168,12 +1233,42 @@ draw_ui:
 	li $a1, 18
 	jal draw_hori
 	li $a1, 19
-	
+	jal draw_hori
+	# Draw "HIT: "
+	li $a0, 91
+	li $a1, 15
+	li $a2, RED
+	jal draw_H
+	li $a0, 95
+	jal draw_I
+	li $a0, 99
+	jal draw_T
+	li $a0, 103
+	jal draw_COLON
+	# Draw " 0000"
+	li $a0, 107
+	jal draw_0
+	li $a0, 111
+	jal draw_0
+	li $a0, 115
+	jal draw_0
+	li $a0, 119
+	jal draw_0
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
-	
+
 draw_score:
+	la $t4, SCORE
+	la $t6, SCORE_MODIFIED
+	li $a1, 21
+	j draw_statistics
+draw_hit:
+	la $t4, HIT
+	la $t6, HIT_MODIFIED
+	li $a1, 15
+	j draw_statistics
+draw_statistics:
 	# Push $ra to stack
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
@@ -1184,7 +1279,6 @@ draw_score:
 	# Allocate memory for local variables
 	addi $sp, $sp, -20
 	# Load SCORE into $t0 to $t3
-	la $t4, SCORE	# AAAABBBB CCCCDDDD
 	lbu $t1, 0($t4)	# $t1 <- AAAABBBB
 	lbu $t3, 1($t4)	# $t3 <- CCCCDDDD
 	srl $t0, $t1, 4	# $t0 <- 0000AAAA
@@ -1196,14 +1290,10 @@ draw_score:
 	sw $t2, -12($fp)
 	sw $t3, -16($fp)
 	# Load SCORE_MODIFIED into $t5
-	la $t6, SCORE_MODIFIED
 	lbu $t5, 0($t6)
 	sw $t5, -20($fp)
-	# Init y coord
-	li $a1, 21
 	# Init color
 	li $a2, RED
-	
 	
 	andi $t7, $t5, 1
 	beqz $t7, no_update_ones
@@ -1395,6 +1485,26 @@ draw_H:	addi $sp, $sp, -4
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
+draw_I:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	move $t8, $ra
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
 draw_M:	addi $sp, $sp, -4
 	sw $ra 0($sp)
 	jal coor_to_addr
@@ -1491,6 +1601,23 @@ draw_S:	addi $sp, $sp, -4
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
+draw_T:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 4($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra	
 draw_V:	addi $sp, $sp, -4
 	sw $ra 0($sp)
 	jal coor_to_addr
@@ -1754,7 +1881,16 @@ draw_VOID:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
-
+PAINT_BLACK_SCREEN:
+	li $a0, 0
+	li $a1, 0
+	li $a2, 128
+PAINTB_NEXT:
+	jal draw_hori
+	addi $a1, $a1, 1
+	blt $a1, 128, PAINTB_NEXT
+	
+	j restart
 
 # Falcon
 draw_falcon:
@@ -1782,12 +1918,12 @@ deltaf_up:
 	sw $zero, 12($t0)
 	sw $zero, 16($t0)
 	addi $t0, $t0, WIDTH_ADDR
-	sw $zero, -12($t0)
 	addi $t0, $t0, WIDTH_ADDR
 	sw $zero, 4($t0)
 	sw $zero, 8($t0)
 	sw $zero, 12($t0)
 	sw $zero, -8($t0)
+	sw $zero, -12($t0)
 	addi $t0, $t0, WIDTH_ADDR
 	sw $zero, 0($t0)
 	sw $zero, -4($t0)
@@ -1803,9 +1939,9 @@ deltaf_down:
 	sw $zero, 12($t0)
 	sw $zero, 16($t0)
 	addi $t0, $t0, -WIDTH_ADDR
+	addi $t0, $t0, -WIDTH_ADDR
 	sw $zero, -12($t0)
 	sw $zero, 8($t0)
-	addi $t0, $t0, -WIDTH_ADDR
 	sw $zero, 4($t0)
 	sw $zero, -8($t0)
 	addi $t0, $t0, -WIDTH_ADDR
@@ -1819,7 +1955,7 @@ deltaf_left:
 	addi $t0, $t0, -WIDTH_ADDR
 	sw $zero, 12($t0)
 	addi $t0, $t0, -WIDTH_ADDR
-	sw $zero, 8($t0)
+	sw $zero, 12($t0)
 	addi $t0, $t0, -WIDTH_ADDR
 	sw $zero, 4($t0)
 	addi $t0, $v0, WIDTH_ADDR
@@ -1838,7 +1974,7 @@ deltaf_right:
 	addi $t0, $t0, -WIDTH_ADDR
 	sw $zero, -16($t0)
 	addi $t0, $t0, -WIDTH_ADDR
-	sw $zero, -12($t0)
+	sw $zero, -16($t0)
 	addi $t0, $t0, -WIDTH_ADDR
 	sw $zero, -8($t0)
 	addi $t0, $v0, WIDTH_ADDR
@@ -1846,7 +1982,7 @@ deltaf_right:
 	addi $t0, $t0, WIDTH_ADDR
 	sw $zero, -16($t0)
 	addi $t0, $t0, WIDTH_ADDR
-	sw $zero, -12($t0)
+	sw $zero, -16($t0)
 	addi $t0, $t0, WIDTH_ADDR
 	sw $zero, -8($t0)
 	j falcon_draw
@@ -1860,66 +1996,69 @@ falcon_draw:
 	
 	move $t0, $v0	
 	sw $t5, 0($t0)
-	sw $t1, 4($t0)
+	sw $t2, 4($t0)
 	sw $t6, 8($t0)
 	sw $t6, 12($t0)
 	sw $t6, -4($t0)
 	sw $t4, -8($t0)
 	sw $t4, -12($t0)
-	sw $t1, -16($t0)
+	sw $t2, -16($t0)
 	addi $t0, $t0, -WIDTH_ADDR
 	sw $t5, 0($t0)
 	sw $t2, 4($t0)
 	sw $t3, 8($t0)
-	sw $t1, 12($t0)
-	sw $t1, 16($t0)
+	sw $t2, 12($t0)
+	sw $t2, 16($t0)
 	sw $t6, -4($t0)
 	sw $t4, -8($t0)
 	sw $t6, -12($t0)
-	sw $t1, -16($t0)
+	sw $t2, -16($t0)
 	addi $t0, $t0, -WIDTH_ADDR
 	sw $t5, 0($t0)
 	sw $t2, 4($t0)
-	sw $t1, 8($t0)
+	sw $t2, 8($t0)
 	sw $t6, -4($t0)
 	sw $t2, -8($t0)
-	sw $t1, -12($t0)
+	sw $t2, -12($t0)
 	addi $t0, $t0, -WIDTH_ADDR
 	sw $t5, 0($t0)
 	sw $t6, -4($t0)
-	sw $t1, -8($t0)
-	sw $t1, 4($t0)
+	sw $t2, -8($t0)
+	sw $t2, -12($t0)
+	sw $t2, 4($t0)
+	sw $t2, 8($t0)
 	addi $t0, $t0, -WIDTH_ADDR
-	sw $t1, 0($t0)
-	sw $t1, -4($t0)
+	sw $t2, 0($t0)
+	sw $t2, -4($t0)
 	# Another side
 	addi $t0, $v0, WIDTH_ADDR
 	sw $t2, 0($t0)
 	sw $t2, 4($t0)
 	sw $t3, 8($t0)
-	sw $t1, 12($t0)
-	sw $t1, 16($t0)
+	sw $t2, 12($t0)
+	sw $t2, 16($t0)
 	sw $t6, -4($t0)
 	sw $t4, -8($t0)
 	sw $t6, -12($t0)
-	sw $t1, -16($t0)
+	sw $t2, -16($t0)
 	addi $t0, $t0, WIDTH_ADDR
 	sw $t5, 0($t0)
 	sw $t4, 4($t0)
-	sw $t1, 8($t0)
+	sw $t2, 8($t0)
 	sw $t6, -4($t0)
 	sw $t2, -8($t0)
-	sw $t1, -12($t0)
+	sw $t2, -12($t0)
 	addi $t0, $t0, WIDTH_ADDR
 	sw $t5, 0($t0)
-	sw $t1, 4($t0)
+	sw $t2, 4($t0)
 	sw $t4, 8($t0)
 	sw $t6, 12($t0)
 	sw $t6, -4($t0)
-	sw $t1, -8($t0)
+	sw $t2, -8($t0)
+	sw $t2, -12($t0)
 	addi $t0, $t0, WIDTH_ADDR
-	sw $t1, -4($t0)
-	sw $t1, 0($t0)
+	sw $t2, -4($t0)
+	sw $t2, 0($t0)
 falcon_end:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
