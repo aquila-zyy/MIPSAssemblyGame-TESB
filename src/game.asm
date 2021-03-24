@@ -105,6 +105,8 @@ NUM_LASERS:	.byte	0
 # Game mechanics
 .eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
 .eqv	SPF		15		# Inverse of FPS
+.eqv	SP_REGENERATION_DELAY	250	# Ticks before SP starts to regenerate
+.eqv	SP_REGENERATION_RATE	50	# Ticks between two SP regenerations
 
 # Keys
 .eqv	KEY_DETECT	0xffff0000	# This address will be set to 1 if a key is pressed when syscalled
@@ -139,8 +141,8 @@ NUM_LASERS:	.byte	0
 
 # $s0 and $s1 are the (x, y) coordinates of the player. Try not to move them since they 
 #   come quite handy as global variables.
-# $s2 is the shield regeneration counter. After 500 ticks of not taking any damage the 
-#   shield will start to regenerate 1 pointer every 50 ticks.
+# $s2 is the shield regeneration counter. After some ticks of not taking any damage the 
+#   shield will start to regenerate 1 point in each certain interval.
 # $s3 is the color of the plane. We need to read the color every time we need to repaint the
 # plane so it's faster to not store it in memory.
 # $s4 is number of obstacles on screen. Since we need to check it every frame, it's better
@@ -198,7 +200,7 @@ restart:
 	sb $t1, 0($t0)
 	
 	# Init regeneration cd, max_obst, binary score.
-	li $s2, 500
+	li $s2, SP_REGENERATION_DELAY
 	li $s6, MAX_ROCK1
 	li $s7, 0
 	
@@ -271,11 +273,11 @@ mainloop:
 no_spawn_yet:
 	addi $s5, $s5, -1
 hold_spawn:
-	# Increase difficulty for each 128 + 25 * num_obst points the player get.
+	# Increase difficulty for each 128 + 5 * num_obst points the player get.
 	addi $t0, $s6, -MAX_ROCK1
 	addi $t0, $t0, 1
 	sll $t0, $t0, 7	# Multiply by 128
-	mul $t1, $s4, 25
+	mul $t1, $s4, 5
 	add $t0, $t0, $t1
 	blt $s7, $t0, no_increase_difficulty
 	beq $s6, 15, no_increase_difficulty	# We've only allocated 15 indices for OBSTS
@@ -302,10 +304,7 @@ no_enable_enemy:
 	jal spawn_enemy
 skip_enemy_spawn:
 	jal move_enemies
-	
 skip_enemy_resolve:
-	
-
 	bgtz $s2, no_regenerate
 	la $t0, SP
 	lb $t1, 0($t0)
@@ -324,7 +323,7 @@ skip_enemy_resolve:
 	jal draw_vert
 	addi $a0, $a0, -1
 	jal draw_vert
-	li $s2, 51
+	li $s2, SP_REGENERATION_RATE
 no_regenerate:
 	addi $s2, $s2, -1
 	li $v0, 32
@@ -406,13 +405,18 @@ move_loop:
 	# If after the movement, the rock's x coordinate is less or equal to 5, then
 	# we need to kill it, decrease $s4 (num_obst) by one, and ask draw_rock function
 	# to remove it from screen.
-	sb $zero, 3($t0)		# Set "alive" in struct to 0
+	sb $zero, 3($t0)		# Set "alive" in rock struct to 0
 	addi $s4, $s4, -1		# Decrease $s4
 	la $t2, LAST_DEAD		# Set LAST_DEAD to $t0 as an optimization.
 	sw $t0, 0($t2)
 	li $a3, 1			# Reset "should_erase" to 1
 	addi $a0, $a0, 1		# Set x coordinate back to where it was, so that
 				# the draw function can erase it properly.
+	sw $t0, -4($sp)		# Prepare to call draw_rock1
+	sw $t1, -8($sp)
+	addi $sp, $sp, -8
+	jal draw_rock1
+	j no_collision
 	# If not, then we don't need to do anything special.
 dont_kill:
 	# Push $t0 and $t1 to stack. We don't care about $t2 since it's only temporary.
@@ -430,6 +434,8 @@ collision_happened:
 	# Since draw_rock function keeps the arguments untouched, we can use the (x, y) directly.
 	li $a3, 1		# "should_erase" = 1
 	jal draw_rock1
+	# Branch, if it is a TIE who should be resolved
+	bne $v1, -1, collision_with_TIE
 	# Redraw plane since we might have erased some part of the plane along with the rock.
 	li $a0, -1
 	jal draw_plane
@@ -458,7 +464,220 @@ move_end:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
+collision_with_TIE:
+	jal handle_TIE_damage
+	j no_collision
 	
+# This function handles the visual and logical effects when player takes a hit.
+# When there's shield left, deduct 1 SP from the SP bar. Otherwise, deduct
+# 1 HP from the HP bar. Whichever is deducted, reset the hit_counter ($s2)
+# to some value so that the shield will stop regenerating.
+handle_damage:
+	# Push $ra on stack
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	# Check SP
+	la $t0, SP
+	lb $t1, 0($t0)
+	beqz $t1, deduct_HP
+	# Deduct SP
+	addi $t1, $t1, -1
+	sb $t1, 0($t0)
+	la $t0, SP_BAR
+	lb $a0, 0($t0)
+	addi $a0, $a0, -3
+	sb $a0, 0($t0)
+	addi $a0, $a0, 1
+	li $a1, 15
+	li $a2, 5
+	li $a3, BLACK
+	jal draw_vert
+	addi $a0, $a0, 1
+	jal draw_vert
+	addi $a0, $a0, 1
+	jal draw_vert
+	j damage_end
+deduct_HP:
+	# Deduct HP
+	la $t0, HP	# Load HP address into $t0
+	lb $t1, 0($t0)	# Load HP value into $t1
+	addi $t1, $t1, -1	# Deduct 1
+	sb $t1, 0($t0)	# Save HP value back
+	# Shirnk HP bar visually
+	la $t0, HP_BAR	# Load HP_BAR, the x coordinates of the last pixel of the HP bar.
+	lb $a0, 0($t0)
+	addi $a0, $a0, -3
+	sb $a0, 0($t0)	# Update x in memory
+	# Erase the last column of the HP bar
+	addi $a0, $a0, 1	# Set x to what it was.
+	li $a1, 21	# The pre-calculated y coordinate.
+	li $a2, 5		# The height of the bar.
+	li $a3, BLACK	# Paint it black.
+	jal draw_vert
+	addi $a0, $a0, 1	# Set x to what it was.
+	jal draw_vert
+	addi $a0, $a0, 1	# Set x to what it was.
+	jal draw_vert 
+damage_end:
+	li $s2, 500	# Reset shield regeneration counter
+	# Pops $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+
+# This function removes the hit TIE
+handle_TIE_damage:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	# Remember that $v1 stores the address of the TIE
+	# Visually erase it
+	lb $a0, 0($v1)	# Load x
+	lb $a1, 1($v1)	# Load y
+	li $a2, 4		# Ask draw_TIE to erase it
+	jal draw_TIE
+	sb $zero, 5($v1)	# Set it dead
+	addi $s4, $s4, -1	# Shrink num_obst
+	# Shrink NUM_ENEMIES
+	la $t0, NUM_ENEMIES
+	lb $t1, 0($t0)
+	addi $t1, $t1, -1
+	sb $t1, 0($t0)
+	li $a0, 0
+	li $a1, 0
+	li $a2, 1
+	li $a3, 0
+	jal add_score
+	addi $s7, $s7, 10
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
+# Spawn a new rock at the right side of the screen.
+# This function finds an empty (dead) location in the OBSTS array and spawns a new rock in it.
+# This function first checks the LAST_DEAD address, since there is most likely a dead rock. If 
+# not, it cycles through the entire array to find a spot for the new rock. If there's no free
+# spot, it will create in an infinate loop so call this only if there is absolutely a spawnable
+# spot.
+spawn_rock:
+	# Push $ra to stack
+	addi $sp, $sp, -8
+	sw $ra, 4($sp)
+	# Push previous frame pointer to stack
+	sw $fp, 0($sp)
+	# Set this frame pointer 
+	move $fp, $sp
+	# Reserve space for local variables
+	addi $sp, $sp, -8
+	# Load relavant addresses
+	la $t9, OBSTS_END
+	lw $t9, 0($t9)
+	la $t8, OBSTS
+	la $t7, LAST_DEAD
+	lw $t0, 0($t7)	# This will be our main pointer of interest.
+	# Push local variables on stack frame
+	sw $t9, -8($fp)
+	li $t6, -1
+find_dead:
+	addi $t6, $t6, 1
+	bgt $t6, 15, prog_end
+	lb $t1, 3($t0)
+	beqz $t1, spawn_start
+	addi $t0, $t0, 4	# Shift pointer to next index
+	bne $t0, $t9, find_dead
+	move $t0, $t8	# Wrap around the end
+	j find_dead
+spawn_start:
+	# First, store the address to the frame
+	sw $t0, -4($fp)
+	# Call RNG, decide the y coord for the rock.
+	# y should range from 35 to 122.
+	li $v0, 42
+	li $a0, 0
+	li $a1, 87	# 122 - 35 = 87
+	syscall
+	addi $a1, $a0, 35
+	li $a0, 122	# Load x coord for the rock
+	sb $a0, 0($t0)
+	sb $a1, 1($t0)
+	li $t1, 1		# Init speed and alive to 1
+	sb $t1, 2($t0)
+	sb $t1, 3($t0)
+	addi, $s4, $s4, 1	# Advance num_rocks
+	# Draw the rock
+	jal draw_rock1
+	# Call RNG, decide the new count down.
+	li $v0, 42
+	li $a0, 0
+	li $a1, 10
+	syscall
+	addi, $s5, $a0, 5	# Ranges from 5 to 15
+	
+	# Advance LAST_DEAD since it's no longer vacant. The best bet is the next index.
+	la $t7, LAST_DEAD
+	la $t8, OBSTS
+	lw $t9, -8($fp)
+	lw $t0, -4($fp)
+	addi $t0, $t0, 4
+	bne $t0, $t9, no_wrap
+	move $t0, $t8
+no_wrap:	sw $t0, 0($t7)
+	# Release local variables and pop $fp and $ra from stack.
+	addi $sp, $sp, 8
+	lw $fp, 0($sp)
+	lw $ra, 4($sp)
+	addi $sp, $sp, 8
+	jr $ra
+
+# This function spawns an enemy at the left side of the screen
+spawn_enemy:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	la $t0, ENEMIES
+	addi $t1, $t0, 18
+	# Find a dead enemy in ENEMIES
+find_enemy_slot:
+	beq $t0, $t1, found_enemy_slot
+	lb $t2, 5($t0)
+	addi $t0, $t0, 6
+	bnez $t2, find_enemy_slot
+found_enemy_slot:
+	addi $t0, $t0, -6
+	# Increase NUM_ENEMIES
+	la $t3, NUM_ENEMIES
+	lb $t4, 0($t3)
+	addi $t4, $t4, 1
+	sb $t4, 0($t3)
+	# Init enemy in ENEMIES
+	# Call RNG, decide the y coord for the enemy.
+	# y = 35 + 5 * <diff_in_addr> + rand[0, 20)
+	li $v0, 42
+	li $a0, 0
+	li $a1, 20
+	syscall
+	addi $a1, $a0, 35
+	la $t1, ENEMIES
+	sub $t2, $t0, $t1
+	mul $t2, $t2, 5
+	add $a1, $a1, $t2
+	
+	li $a0, 5
+	li $t3, 3		# direction
+	li $t4, 25	# move_cd
+	li $t5, 25	# fire_cd
+	li $t6, 1		# isAlive
+	sb $a0, 0($t0)
+	sb $a1, 1($t0)
+	sb $t3, 2($t0)
+	sb $t4, 3($t0)
+	sb $t5, 4($t0)
+	sb $t6, 5($t0)
+	li $a2, -1
+	move $a3, $t0
+	jal draw_TIE
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+
 # This function moves all enemies 1 pixel towords the direction determined by their "dirct" field.
 move_enemies:
 	# Push $ra and $fp
@@ -493,27 +712,30 @@ search_alive_enemy:
 	sb $a2, -11($fp)		# Direction
 	sb $t3, -12($fp)		# move_cd
 	sb $t4, -13($fp)		# fire_cd
+	move $a3, $t0
 move_again:
 	beq $a2, 0, move_e_up
-	beq $a2, 1, move_e_down
-	beq $a2, 2, move_e_left
+	beq $a2, 2, move_e_down
+	beq $a2, 1, move_e_left
 	beq $a2, 3, move_e_right
 	j prog_end
 move_e_up:
-	# Boundary is 6 + 5 * <addr_diff>
-	sub $t2, $t1, $t0
+	# Boundary is 35 + 5 * <addr_diff>
+	la $t1, ENEMIES
+	sub $t2, $t0, $t1
 	mul $t2, $t2, 5
-	addi $t2, $t2, 5
-	beq $a1, $t2, invert_movement
+	addi $t2, $t2, 35
+	ble $a1, $t2, invert_movement
 	addi $a1, $a1, -1
 	jal draw_TIE
 	j update_enemy_data
 move_e_down:
-	# Boundary is 24 + 5 * <addr_diff>
-	sub $t2, $t1, $t0
+	# Boundary is 55 + 5 * <addr_diff>
+	la $t1, ENEMIES
+	sub $t2, $t0, $t1
 	mul $t2, $t2, 5
-	addi $t2, $t2, 24
-	beq $a1, $t2, invert_movement
+	addi $t2, $t2, 55
+	bge $a1, $t2, invert_movement
 	addi $a1, $a1, 1
 	jal draw_TIE
 	j update_enemy_data
@@ -530,7 +752,7 @@ move_e_right:
 	jal draw_TIE
 	j update_enemy_data
 invert_movement:	
-	addi $a2, $a2, 1
+	addi $a2, $a2, 2
 	ble $a2, 3, confirm_invert
 	addi $a2, $a2, -4
 confirm_invert:
@@ -585,233 +807,6 @@ move_enemies_end:
 	addi $sp, $sp, 4
 	jr $ra
 	
-# This function handles the visual and logical effects when player takes a hit.
-# When there's shield left, deduct 1 SP from the SP bar. Otherwise, deduct
-# 1 HP from the HP bar. Whichever is deducted, reset the hit_counter ($s2)
-# to some value so that the shield will stop regenerating.
-handle_damage:
-	# Push $ra on stack
-	addi $sp, $sp, -4
-	sw $ra, 0($sp)
-	# Check SP
-	la $t0, SP
-	lb $t1, 0($t0)
-	beqz $t1, deduct_HP
-	# Deduct SP
-	addi $t1, $t1, -1
-	sb $t1, 0($t0)
-	la $t0, SP_BAR
-	lb $a0, 0($t0)
-	addi $a0, $a0, -3
-	sb $a0, 0($t0)
-	addi $a0, $a0, 1
-	li $a1, 15
-	li $a2, 5
-	li $a3, BLACK
-	jal draw_vert
-	addi $a0, $a0, 1
-	jal draw_vert
-	addi $a0, $a0, 1
-	jal draw_vert
-	j damage_end
-deduct_HP:
-	# Deduct HP
-	la $t0, HP	# Load HP address into $t0
-	lb $t1, 0($t0)	# Load HP value into $t1
-	addi $t1, $t1, -1	# Deduct 1
-	sb $t1, 0($t0)	# Save HP value back
-	# Shirnk HP bar visually
-	la $t0, HP_BAR	# Load HP_BAR, the x coordinates of the last pixel of the HP bar.
-	lb $a0, 0($t0)
-	addi $a0, $a0, -3
-	sb $a0, 0($t0)	# Update x in memory
-	# Erase the last column of the HP bar
-	addi $a0, $a0, 1	# Set x to what it was.
-	li $a1, 21	# The pre-calculated y coordinate.
-	li $a2, 5		# The height of the bar.
-	li $a3, BLACK	# Paint it black.
-	jal draw_vert
-	addi $a0, $a0, 1	# Set x to what it was.
-	jal draw_vert
-	addi $a0, $a0, 1	# Set x to what it was.
-	jal draw_vert 
-damage_end:
-	li $s2, 500
-	# Pops $ra
-	lw $ra, 0($sp)
-	addi $sp, $sp, 4
-	jr $ra
-
-# Spawn a new rock at the right side of the screen.
-# This function finds an empty (dead) location in the OBSTS array and spawns a new rock in it.
-# This function first checks the LAST_DEAD address, since there is most likely a dead rock. If 
-# not, it cycles through the entire array to find a spot for the new rock. If there's no free
-# spot, it will create in an infinate loop so call this only if there is absolutely a spawnable
-# spot.
-spawn_rock:
-	# Push $ra to stack
-	addi $sp, $sp, -8
-	sw $ra, 4($sp)
-	# Push previous frame pointer to stack
-	sw $fp, 0($sp)
-	# Set this frame pointer 
-	move $fp, $sp
-	# Reserve space for local variables
-	addi $sp, $sp, -8
-	# Load relavant addresses
-	la $t9, OBSTS_END
-	lw $t9, 0($t9)
-	la $t8, OBSTS
-	la $t7, LAST_DEAD
-	lw $t0, 0($t7)	# This will be our main pointer of interest.
-	# Push local variables on stack frame
-	sw $t9, -8($fp)
-find_dead:
-	lb $t1, 3($t0)
-	beqz $t1, spawn_start
-	addi $t0, $t0, 4	# Shift pointer to next index
-	bne $t0, $t9, find_dead
-	move $t0, $t8	# Wrap around the end
-	j find_dead
-spawn_start:
-	# First, store the address to the frame
-	sw $t0, -4($fp)
-	# Call RNG, decide the y coord for the rock.
-	# y should range from 35 to 122.
-	li $v0, 42
-	li $a0, 0
-	li $a1, 87	# 122 - 35 = 87
-	syscall
-	addi $a1, $a0, 35
-	li $a0, 122	# Load x coord for the rock
-	sb $a0, 0($t0)
-	sb $a1, 1($t0)
-	li $t1, 1		# Init speed and alive to 1
-	sb $t1, 2($t0)
-	sb $t1, 3($t0)
-	addi, $s4, $s4, 1	# Advance num_rocks
-	# Draw the rock
-	jal draw_rock1
-	# Call RNG, decide the new count down.
-	li $v0, 42
-	li $a0, 0
-	li $a1, 10
-	syscall
-	addi, $s5, $a0, 5	# Ranges from 5 to 15
-	
-	# Advance LAST_DEAD since it's no longer vacant. The best bet is the next index.
-	la $t7, LAST_DEAD
-	la $t8, OBSTS
-	lw $t9, -8($fp)
-	lw $t0, -4($fp)
-	addi $t0, $t0, 4
-	bne $t0, $t9, no_wrap
-	move $t0, $t8
-no_wrap:	sw $t0, 0($t7)
-	# Release local variables and pop $fp and $ra from stack.
-	addi $sp, $sp, 8
-	lw $fp, 0($sp)
-	lw $ra, 4($sp)
-	addi $sp, $sp, 8
-	jr $ra
-	
-spawn_enemy:
-	addi $sp, $sp, -4
-	sw $ra, 0($sp)
-	la $t0, ENEMIES
-	addi $t1, $t0, 18
-	# Find a dead enemy in ENEMIES
-find_enemy_slot:
-	beq $t0, $t1, found_enemy_slot
-	lb $t2, 5($t0)
-	addi $t0, $t0, 6
-	bnez $t2, find_enemy_slot
-found_enemy_slot:
-	addi $t0, $t0, -6
-	# Increase NUM_ENEMIES
-	la $t3, NUM_ENEMIES
-	lb $t4, 0($t3)
-	addi $t4, $t4, 1
-	sb $t4, 0($t3)
-	# Init enemy in ENEMIES
-	# Call RNG, decide the y coord for the enemy.
-	# y = 6 + 5 * <diff_in_addr> + rand[0, 30)
-	li $v0, 42
-	li $a0, 0
-	li $a1, 30
-	syscall
-	addi $a1, $a0, 6
-	sub $t2, $t1, $t0
-	mul $t2, $t2, 5
-	add $a1, $a1, $t2
-	
-	li $a0, 5
-	li $t3, 3		# direction
-	li $t4, 25	# move_cd
-	li $t5, 25	# fire_cd
-	li $t6, 1		# isAlive
-	sb $a0, 0($t0)
-	sb $a1, 1($t0)
-	sb $t3, 2($t0)
-	sb $t4, 3($t0)
-	sb $t5, 4($t0)
-	sb $t6, 5($t0)
-	li $a2, -1
-	jal draw_TIE
-	lw $ra, 0($sp)
-	addi $sp, $sp, 4
-	jr $ra
-
-key_event:
-	# First push $ra to stack
-	addi $sp, $sp, -4
-	sw $ra, 0($sp)
-	# Since we do not need local variables, we do not modify frame pointer.
-	
-	li $t9, KEY_DETECT
-	lw $t8, 0($t9)
-	beqz $t8, key_end	# Skip if no key is being pressed down.
-	lw $t2, 4($t9)
-	beq $t2, KEY_D, ke_d
-	beq $t2, KEY_S, ke_s
-	beq $t2, KEY_A, ke_a
-	beq $t2, KEY_W, ke_w
-	beq $t2, KEY_P, ke_p
-	j key_end		# Skip if the key being pressed down isn't functional.
-ke_d:	bge $s0, 122, key_end # Skip if x is already at right border
-	# Update coordinates
-	addi $s0, $s0, 1
-	li $a0, 3
-	move $a1, $s3
-	jal draw_plane
-	j key_end
-ke_a:	ble $s0, 5, key_end # Skip if x is already at left border
-	# Update coordinates
-	addi $s0, $s0, -1
-	li $a0, 2
-	move $a1, $s3
-	jal draw_plane
-	j key_end
-ke_s:	bge $s1, 122, key_end # Skip if y is already at bottom border
-	# Update coordinates
-	addi $s1, $s1, 1
-	li $a0, 1
-	move $a1, $s3
-	jal draw_plane
-	j key_end
-ke_w:	ble $s1, 35, key_end # Skip if y is already at top border
-	# Update coordinates
-	addi $s1, $s1, -1
-	li $a0, 0
-	move $a1, $s3
-	jal draw_plane
-	j key_end
-ke_p:	addi $sp, $sp, 4
-	j PAINT_BLACK_SCREEN
-key_end:	# Pop back $ra
-	lw $ra, 0($sp)
-	addi $sp, $sp, 4
-	jr $ra
 
 	
 # This function draws a horizontal line starting from (x, y) inclusive to (x, y+k) exclusive with color c,
@@ -885,19 +880,28 @@ draw_plane:
 # @param const $a0, the x coordinate of the rock.
 # @param const $a1, the y coordinate of the rock.
 # @param const $a2, whether this function should instead erase the rock from the screen.
-# @return $v1, if the a collision is detected while drawing the rock.
+# @return $v1, the address of the object which this rock bumped into, if any. 0 otherwise.
 draw_rock1:
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
-	li $v1, 0 # Init return value
+	addi $sp, $sp, -4
+	sw $fp, 0($sp)
+	move $fp, $sp
+	addi $sp, $sp, -16
+	li $t0, BLACK
+	li $t1, ROCK1
+	li $t2, ROCK2
+	sw $t0, -4($fp)
+	sw $t1, -8($fp)
+	sw $t2, -12($fp)
 	beq $a3, 1, drawr1_erase
 	blt $a0, 122, drawr1_shift
 drawr1_full: # Draw rock 1 full
 	jal coor_to_addr
 	# Load colors
-	li $t0, BLACK
-	li $t1, ROCK1
-	li $t2, ROCK2
+	lw $t0, -4($fp)
+	lw $t1, -8($fp)
+	lw $t2, -12($fp)
 	sw $t1, 0($v0)
 	sw $t1, -4($v0)
 	sw $t1, 4($v0)
@@ -918,21 +922,21 @@ drawr1_full: # Draw rock 1 full
 	j drawr1_end
 drawr1_shift: # Draw rock 1 shift
 	jal coor_to_addr
-	# Load colors
-	li $t0, BLACK
-	li $t1, ROCK1
-	li $t2, ROCK2
+	li $v1, 0 # Init return value
+	lw $t0, -4($fp)
+	lw $t1, -8($fp)
+	lw $t2, -12($fp)
 	# Test collision on nose
 	lw $t3, -8($v0)
-	bne $t3, $s3, no_collide1p	# Here we're detecting whether the pixel this rock
-				# will overwrite in this frame matches the current
-				# color of the player plane.
-	li $v1, 1
-	j test1_end
-no_collide1p:
-	bne $t3, TIE2, test1_end
-	#jal TIE_collision_check
-test1_end:
+	addi $sp, $sp, -4
+	sw $t3, 0($sp)
+	jal test_object_collision
+	addi $sp, $sp, 4
+	# Test end
+	lw $t0, -4($fp)
+	lw $t1, -8($fp)
+	lw $t2, -12($fp)
+	# Reload complete
 	sw $t1, -4($v0)
 	sw $t2, 8($v0)
 	sw $t0, 12($v0)
@@ -944,13 +948,14 @@ test1_end:
 	sw $t0, 4($t4)
 	# Test collision on left point
 	lw $t3, -4($t4)
-	bne $t3, $s3, no_collide2p
-	li $v1, 1
-	j test2_end
-no_collide2p:
-	bne $t3, TIE2, test2_end
-	#jal TIE_collision_check
-test2_end:
+	addi $sp, $sp, -4
+	sw $t3, 0($sp)
+	jal test_object_collision
+	addi $sp, $sp, 4
+	# Test end
+	lw $t0, -4($fp)
+	lw $t2, -12($fp)
+	# Reload complete
 	sw $t2, 0($t4)
 	addi $t4, $v0, -WIDTH_ADDR
 	sw $t0, 8($t4)
@@ -959,43 +964,72 @@ test2_end:
 	sw $t0, 4($t4)
 	# Test collision on right point
 	lw $t3, -4($t4)
-	bne $t3, $s3, no_collide3p
-	li $v1, 1
-	j test3_end
-no_collide3p:
-	bne $t3, TIE2, test3_end
-	#jal TIE_collision_check
-test3_end:
+	addi $sp, $sp, -4
+	sw $t3, 0($sp)
+	jal test_object_collision
+	addi $sp, $sp, 4
+	# Test end
+	lw $t2, -12($fp)
+	# Reload complete
 	sw $t2, 0($t4)
 	j drawr1_end
 drawr1_erase:
 	jal coor_to_addr
-	# Load colors
-	li $t0, BLACK
-	li $t1, ROCK1
-	li $t2, ROCK2
-	li $t3, ROCK3
-	sw $t0, 0($v0)
-	sw $t0, -4($v0)
-	sw $t0, 4($v0)
-	sw $t0, -8($v0)
-	sw $t0, 8($v0)
+	sw $zero, 0($v0)
+	sw $zero, -4($v0)
+	sw $zero, 4($v0)
+	sw $zero, -8($v0)
+	sw $zero, 8($v0)
 	addi $t4, $v0, WIDTH_ADDR
-	sw $t0, 0($t4)
-	sw $t0, -4($t4)
-	sw $t0, 4($t4)	
+	sw $zero, 0($t4)
+	sw $zero, -4($t4)
+	sw $zero, 4($t4)	
 	addi $t4, $t4, WIDTH_ADDR
-	sw $t0, 0($t4)
+	sw $zero, 0($t4)
 	addi $t4, $v0, -WIDTH_ADDR
-	sw $t0, 0($t4)
-	sw $t0, -4($t4)
-	sw $t0, 4($t4)	
+	sw $zero, 0($t4)
+	sw $zero, -4($t4)
+	sw $zero, 4($t4)	
 	addi $t4, $t4, -WIDTH_ADDR
-	sw $t0, 0($t4)
+	sw $zero, 0($t4)
 drawr1_end:
+	addi $sp, $sp, 16
+	lw $fp, 0($sp)
+	addi $sp, $sp, 4
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
+	
+# A helper function to detect collision.
+test_object_collision:
+	bnez $v1, already_found
+	lw $t0, 0($sp)
+	beqz $t0, no_collision_possible
+	beq $t0, 0x00c8c8c8, is_player	# Falcon outline
+	beq $t0, 0x00545454, is_player	# Falcon cockpit
+	beq $t0, 0x008d8db3, is_player	# Falcon light blue
+	beq $t0, 0x0064647e, is_player	# Falcon dark blue
+	j not_player
+is_player:
+	# Is player
+	li $v1, -1
+	jr $ra
+not_player:
+	#lw $t0, 0($sp)	# $t0 = actual color
+	li $t1, TIE2	# Base color
+	sub $t2, $t1, $t0	# $t2 = Address offset = base - actual
+	bltz $t2, no_collision_possible	# Ignore TIE3 color
+	bge $t2, 18, collision_exception	# Error if offset >18
+	la $t3, ENEMIES	# Bass address
+	add $v1, $t3, $t2
+	jr $ra
+no_collision_possible:
+already_found:
+	jr $ra
+collision_exception:
+	beq $t0, TIE1, no_collision_possible	# Ignore TIE1 color
+	j prog_end
+	
 	
 # This function modifies SCORE. It takes for parameters ($a0, $a1, $a2, $a3) that stores the
 # Thousands digit, hundreds digit, tens digit and ones digit of the amount of bonus score this 
@@ -1070,6 +1104,58 @@ no_carry_thousands:
 	# Also store $t5 to SCORE_MODIFIED
 	sb $t5, 0($t6)
 	jr $ra
+
+key_event:
+	# First push $ra to stack
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	# Since we do not need local variables, we do not modify frame pointer.
+	
+	li $t9, KEY_DETECT
+	lw $t8, 0($t9)
+	beqz $t8, key_end	# Skip if no key is being pressed down.
+	lw $t2, 4($t9)
+	beq $t2, KEY_D, ke_d
+	beq $t2, KEY_S, ke_s
+	beq $t2, KEY_A, ke_a
+	beq $t2, KEY_W, ke_w
+	beq $t2, KEY_P, ke_p
+	j key_end		# Skip if the key being pressed down isn't functional.
+ke_d:	bge $s0, 122, key_end # Skip if x is already at right border
+	# Update coordinates
+	addi $s0, $s0, 1
+	li $a0, 3
+	move $a1, $s3
+	jal draw_plane
+	j key_end
+ke_a:	ble $s0, 5, key_end # Skip if x is already at left border
+	# Update coordinates
+	addi $s0, $s0, -1
+	li $a0, 2
+	move $a1, $s3
+	jal draw_plane
+	j key_end
+ke_s:	bge $s1, 122, key_end # Skip if y is already at bottom border
+	# Update coordinates
+	addi $s1, $s1, 1
+	li $a0, 1
+	move $a1, $s3
+	jal draw_plane
+	j key_end
+ke_w:	ble $s1, 35, key_end # Skip if y is already at top border
+	# Update coordinates
+	addi $s1, $s1, -1
+	li $a0, 0
+	move $a1, $s3
+	jal draw_plane
+	j key_end
+ke_p:	addi $sp, $sp, 4
+	j PAINT_BLACK_SCREEN
+key_end:	# Pop back $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
 draw_ui:
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
@@ -1879,10 +1965,12 @@ draw_VOID:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
+	
 PAINT_BLACK_SCREEN:
 	li $a0, 0
 	li $a1, 0
 	li $a2, 128
+	li $a3, 0
 PAINTB_NEXT:
 	jal draw_hori
 	addi $a1, $a1, 1
@@ -2003,8 +2091,8 @@ falcon_draw:
 	sw $t2, -16($t0)
 	addi $t0, $t0, -WIDTH_ADDR
 	sw $t5, 0($t0)
-	sw $t2, 4($t0)
-	sw $t3, 8($t0)
+	sw $t4, 4($t0)
+	sw $t4, 8($t0)
 	sw $t2, 12($t0)
 	sw $t2, 16($t0)
 	sw $t6, -4($t0)
@@ -2030,9 +2118,9 @@ falcon_draw:
 	sw $t2, -4($t0)
 	# Another side
 	addi $t0, $v0, WIDTH_ADDR
-	sw $t2, 0($t0)
-	sw $t2, 4($t0)
-	sw $t3, 8($t0)
+	sw $t1, 0($t0)
+	sw $t4, 4($t0)
+	sw $t4, 8($t0)
 	sw $t2, 12($t0)
 	sw $t2, 16($t0)
 	sw $t6, -4($t0)
@@ -2041,7 +2129,7 @@ falcon_draw:
 	sw $t2, -16($t0)
 	addi $t0, $t0, WIDTH_ADDR
 	sw $t5, 0($t0)
-	sw $t4, 4($t0)
+	sw $t1, 4($t0)
 	sw $t2, 8($t0)
 	sw $t6, -4($t0)
 	sw $t2, -8($t0)
@@ -2049,8 +2137,8 @@ falcon_draw:
 	addi $t0, $t0, WIDTH_ADDR
 	sw $t5, 0($t0)
 	sw $t2, 4($t0)
-	sw $t4, 8($t0)
-	sw $t6, 12($t0)
+	sw $t1, 8($t0)
+	sw $t2, 12($t0)
 	sw $t6, -4($t0)
 	sw $t2, -8($t0)
 	sw $t2, -12($t0)
@@ -2069,17 +2157,21 @@ falcon_end:
 # @param const $a0, the x coordinate of the TIE fighter.
 # @param const $a1, the y coordinate of the TIE fighter,
 # @param const $a2, how should the function draw this fighter.
+# @param const $a3, the address of the struct of this TIE fighter.
 draw_TIE:
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
 	jal coor_to_addr
 	li $t1, TIE1
 	li $t2, TIE2
+	la $t4, ENEMIES
+	sub $t4, $a3, $t4
+	sub $t2, $t2, $t4
 	li $t3, TIE3
 	beq $a2, -1, TIE_ALL
 	beq $a2, 0, TIE_UP
-	beq $a2, 1, TIE_DOWN
-	beq $a2, 2, TIE_LEFT
+	beq $a2, 2, TIE_DOWN
+	beq $a2, 1, TIE_LEFT
 	beq $a2, 3, TIE_RIGHT
 	beq $a2, 4, TIE_ERASE
 	j prog_end	# Signify error
@@ -2302,25 +2394,41 @@ TIE_ERASE:
 	sw $t2, 4($v0)
 	sw $t2, -4($v0)
 	addi $t0, $v0, WIDTH_ADDR
-	sw $t3, 0($t0)
+	sw $t1, 0($t0)
+	sw $t2, 4($t0)
+	sw $t2, -4($t0)
 	addi $t0, $t0, WIDTH_ADDR
 	sw $t3, 0($t0)
 	addi $t0, $t0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t2, -16($t0)
+	sw $t2, -12($t0)
 	sw $t2, -8($t0)
 	sw $t2, -4($t0)
 	sw $t2, 0($t0)
 	sw $t2, 4($t0)
 	sw $t2, 8($t0)
+	sw $t2, 12($t0)
+	sw $t2, 16($t0)
 	addi $t0, $v0, -WIDTH_ADDR
-	sw $t3, 0($t0)
+	sw $t1, 0($t0)
+	sw $t2, 4($t0)
+	sw $t2, -4($t0)
 	addi $t0, $t0, -WIDTH_ADDR
 	sw $t3, 0($t0)
 	addi $t0, $t0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t2, -16($t0)
+	sw $t2, -12($t0)
 	sw $t2, -8($t0)
 	sw $t2, -4($t0)
 	sw $t2, 0($t0)
 	sw $t2, 4($t0)
 	sw $t2, 8($t0)
+	sw $t2, 12($t0)
+	sw $t2, 16($t0)
 TIE_end:	
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
