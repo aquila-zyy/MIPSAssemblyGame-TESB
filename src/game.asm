@@ -57,8 +57,8 @@ LAST_DEAD:	.word	0
 			# This is an optimization. Instead of performing a linear search on OBSTS array
 			# every time we need to find a empty slot to spawn something (aka a "dead" item),
 			# we remember the last item that is set to "dead". In case of a successful spawn,
-			# we advance this variable by 1 index, and carry around to 0 if it exceeds the 
-			# maximum index.
+			# we advance this variable by 1 index, and carry around to array base if it 
+			# exceeds the maximum address.
 			
 SCORE:		.half	0
 			# These two bytes stores the score. It uses a special structure to save
@@ -83,7 +83,7 @@ ENEMIES:		.byte	0:18
 			#     char fire_cd;
 			#     char isAlive
 			# }
-ENEMY_ENABLED:	.byte	0	# A boolean value, to indicate whether enemies can spawn.
+ENEMY_ENABLED:	.half	0	# A boolean value, to indicate whether enemies can spawn.
 NUM_ENEMIES:	.byte	0	# Number of enemies currectly on screen
 LASERS:		.byte	0:18
 			# struct laser {
@@ -233,7 +233,8 @@ restart:
 	sb $zero, 16($t0)
 	sb $zero, 17($t0)
 	la $t0, ENEMY_ENABLED
-	sb $zero, 0($t0)
+	li $t1, -250
+	sh $t1, 0($t0)
 	la $t0, NUM_ENEMIES
 	sb $zero, 0($t0)
 	
@@ -297,22 +298,97 @@ hold_spawn:
 	addi $t1, $t1, 4
 	sw $t1, 0($t0)
 no_increase_difficulty:
-	ble $s7, 5, no_enable_enemy
 	la $t0, ENEMY_ENABLED
-	li $t1, 1
-	sb $t1, 0($t0)
-no_enable_enemy:
+	lh $t1, 0($t0)
+	bltz $t1, enemy_approching_count_up
+	bgtz $t1, enemy_chasing_count_down
+	beqz $t1, prog_end
+enemy_approching_count_up:
+	addi $t3, $t1, 1
+	sh $t3, 0($t0)
+	blt $t3, -50, skip_enemy_spawn_only_move
+	bgt $t3, -50, no_print_warning
+	li $a0, 15
+	li $a1, 9
+	li $a2, YELLOW
+	jal draw_T
+	li $a0, 19
+	jal draw_I
+	li $a0, 23
+	jal draw_E
+	li $a0, 31
+	jal draw_I
+	li $a0, 35
+	jal draw_N
+	li $a0, 39
+	jal draw_C
+	li $a0, 43
+	jal draw_O
+	li $a0, 47
+	jal draw_M
+	li $a0, 51
+	jal draw_I
+	li $a0, 55
+	jal draw_N
+	li $a0, 59
+	jal draw_G
+no_print_warning:
+	bltz $t3, skip_enemy_spawn_only_move
+	# If count to 0, set it to a positive value
+	li $a0, 0
+	li $a1, 500
+	li $v0, 42
+	syscall
+	move $t1, $a0
+	addi $t1, $t1, 250
+	sh $t1, 0($t0)
+	j spawn_enemy_attempt
+enemy_chasing_count_down:
+	addi $t1, $t1, -1
+	sh $t1, 0($t0)
+	bgtz $t1, spawn_enemy_attempt
+	# if count to 0, generate a negative number.
+	li $a0, 0
+	li $a1, 500
+	li $v0, 42
+	syscall
+	sub $t2, $zero, $a0
+	addi $t2, $t2, -250
+	sh $t2, 0($t0)
+	li $a0, 15
+	li $a1, 9
+	li $a2, BLACK
+	jal draw_T
+	li $a0, 19
+	jal draw_I
+	li $a0, 23
+	jal draw_E
+	li $a0, 31
+	jal draw_I
+	li $a0, 35
+	jal draw_N
+	li $a0, 39
+	jal draw_C
+	li $a0, 43
+	jal draw_O
+	li $a0, 47
+	jal draw_M
+	li $a0, 51
+	jal draw_I
+	li $a0, 55
+	jal draw_N
+	li $a0, 59
+	jal draw_G
+	j skip_enemy_spawn_only_move
+spawn_enemy_attempt:
 # Try spawn enemies
-	la $t0, ENEMY_ENABLED
-	lb $t0, 0($t0)
-	beqz $t0, skip_enemy_resolve
 	la $t0, NUM_ENEMIES
 	lb $t1, 0($t0)
-	beq $t1, 3, skip_enemy_spawn
+	beq $t1, 3, skip_enemy_spawn_only_move
 	jal spawn_enemy
-skip_enemy_spawn:
+skip_enemy_spawn_only_move:
 	jal move_enemies
-skip_enemy_resolve:
+	
 	bgtz $s2, no_regenerate
 	la $t0, SP
 	lb $t1, 0($t0)
@@ -373,6 +449,13 @@ mainend:
 	li $a1, 64
 	li $a2, RED
 	jal draw_R
+restart_key_detect:
+	li $t9, KEY_DETECT
+	lw $t8, 0($t9)
+	beqz $t8, restart_key_detect	# Skip if no key is being pressed down.
+	lw $t2, 4($t9)
+	bne $t2, KEY_P, restart_key_detect
+	j PAINT_BLACK_SCREEN
 prog_end:
 	# Terminate
 	li $v0, 10
@@ -538,7 +621,14 @@ damage_end:
 handle_TIE_damage:
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
-	# Remember that $v1 stores the address of the TIE
+	
+	addi $s4, $s4, -1	# Shrink num_obst
+	
+	lb $t0, 5($v1)
+	addi $t0, $t0, -1
+	sb $t0, 5($v1)
+	bgtz $t0, TIE_not_destroyed
+	# If isAlive is 0
 	# Visually erase it
 	lb $a0, 0($v1)	# Load x
 	lb $a1, 1($v1)	# Load y
@@ -546,10 +636,8 @@ handle_TIE_damage:
 	addi $sp, $sp, -4
 	sw $v1, 0($sp)
 	jal draw_TIE
-	lw $v1, 0($sp)
 	addi $sp, $sp, 4
-	sb $zero, 5($v1)	# Set it dead
-	addi $s4, $s4, -1	# Shrink num_obst
+	lw $v1, 0($sp)
 	# Shrink NUM_ENEMIES
 	la $t0, NUM_ENEMIES
 	lb $t1, 0($t0)
@@ -561,6 +649,13 @@ handle_TIE_damage:
 	li $a3, 0
 	jal add_score
 	addi $s7, $s7, 10
+	j TIE_damage_done
+TIE_not_destroyed:
+	# Redraw TIE
+	lb $a0, 0($v1)
+	lb $a1, 1($v1)
+	li $a2, -1
+TIE_damage_done:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
@@ -621,9 +716,9 @@ spawn_start:
 	# Call RNG, decide the new count down.
 	li $v0, 42
 	li $a0, 0
-	li $a1, 10
+	li $a1, 6
 	syscall
-	addi, $s5, $a0, 5	# Ranges from 5 to 15
+	addi, $s5, $a0, 8	# Ranges from 8 to 13
 	
 	# Advance LAST_DEAD since it's no longer vacant. The best bet is the next index.
 	la $t7, LAST_DEAD
@@ -677,7 +772,7 @@ found_enemy_slot:
 	li $t3, 3		# direction
 	li $t4, 25	# move_cd
 	li $t5, 25	# fire_cd
-	li $t6, 1		# isAlive
+	li $t6, 3		# isAlive
 	sb $a0, 0($t0)
 	sb $a1, 1($t0)
 	sb $t3, 2($t0)
@@ -1001,8 +1096,9 @@ test_object_collision:
 	beqz $t0, no_collision_possible
 	beq $t0, Falcon1, is_player	# Falcon cockpit
 	beq $t0, Falcon2, is_player	# Falcon outline
-	beq $t0, Falcon3, is_player	# Falcon light blue
-	beq $t0, Falcon4, is_player	# Falcon dark blue
+	beq $t0, Falcon3, is_player	# Falcon light grey
+	beq $t0, Falcon4, is_player	# Falcon light blue
+	beq $t0, Falcon5, is_player	# Falcon dark blue
 	j not_player
 is_player:
 	# Is player
@@ -1644,6 +1740,24 @@ draw_M:	addi $sp, $sp, -4
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
+draw_N:	addi $sp, $sp, -4
+	sw $ra 0($sp)
+	jal coor_to_addr
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 4($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	addi $v0, $v0, WIDTH_ADDR
+	sw $a2, 0($v0)
+	sw $a2, 8($v0)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
 draw_O:	addi $sp, $sp, -4
 	sw $ra 0($sp)
 	jal coor_to_addr
@@ -2197,7 +2311,7 @@ draw_TIE:
 	jal coor_to_addr
 	li $v1, 0
 	jal detect_collision_TIE
-	li $t1, TIE1
+	li $t1, TIE2
 	li $t2, TIE2
 	la $t4, ENEMIES
 	sub $t4, $a3, $t4
