@@ -73,6 +73,27 @@ SCORE_MODIFIED:	.byte	0
 			
 HIT:		.half	0
 HIT_MODIFIED:	.byte	0
+
+ENEMIES:		.byte	0:18
+			# struct enemy {
+			#     char x;
+			#     char y;
+			#     char dirct;
+			#     char move_cd
+			#     char fire_cd;
+			#     char isAlive
+			# }
+ENEMY_ENABLED:	.byte	0
+NUM_ENEMIES:	.byte	0
+LASERS:		.byte	0:18
+			# struct laser {
+			#     char x;
+			#     char y;
+			#     char isAlive;
+			# }
+LAST_DEAD_LASER:	.word	0
+LASERS_END:	.word	0
+NUM_LASERS:	.byte	0
 			
 
 .eqv	BASE_ADDRESS	0x10010000	# The top left of the map
@@ -83,7 +104,7 @@ HIT_MODIFIED:	.byte	0
 					# on different rows.
 # Game mechanics
 .eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
-.eqv	IFPS		15		# Inverse of FPS
+.eqv	SPF		15		# Inverse of FPS
 
 # Keys
 .eqv	KEY_DETECT	0xffff0000	# This address will be set to 1 if a key is pressed when syscalled
@@ -109,6 +130,10 @@ HIT_MODIFIED:	.byte	0
 .eqv	ROCK2		0x008c8f91
 .eqv	ROCK3		0x00b9b9b9
 
+.eqv	TIE1		0x00303030
+.eqv	TIE2		0x009c9c9c
+.eqv	TIE3		0x00c7c7c7
+
 .text
 .globl main
 
@@ -129,6 +154,7 @@ main:	# Initialize the program.
 	move $fp, $sp	# Set frame pointer to the inital stack pointer.
 	
 restart:	
+	# Init OBSTS, LAST_DEAD, OBSTS_END
 	la $t0, OBSTS	# Set LAST_DEAD to the first item in OBSTS
 	la $t1, LAST_DEAD
 	sw $t0, 0($t1)
@@ -153,6 +179,7 @@ restart:
 	sw $zero, 52($t0)
 	sw $zero, 56($t0)
 	
+	# Init SCORE, HIT, HP, HP_BAR, SP, SP_BAR
 	la $t0, SCORE
 	sh $zero, 0($t0)
 	la $t0, HIT
@@ -170,10 +197,45 @@ restart:
 	li $t1, 28
 	sb $t1, 0($t0)
 	
-	
+	# Init regeneration cd, max_obst, binary score.
 	li $s2, 500
 	li $s6, MAX_ROCK1
 	li $s7, 0
+	
+	# Init ENEMIES, ENEMY_ENABLED, NUM_ENEMIES
+	la $t0, ENEMIES
+	sb $zero, 0($t0)
+	sb $zero, 1($t0)
+	sb $zero, 2($t0)
+	sb $zero, 3($t0)
+	sb $zero, 4($t0)
+	sb $zero, 5($t0)
+	sb $zero, 6($t0)
+	sb $zero, 7($t0)
+	sb $zero, 8($t0)
+	sb $zero, 9($t0)
+	sb $zero, 10($t0)
+	sb $zero, 11($t0)
+	sb $zero, 12($t0)
+	sb $zero, 13($t0)
+	sb $zero, 14($t0)
+	sb $zero, 15($t0)
+	sb $zero, 16($t0)
+	sb $zero, 17($t0)
+	la $t0, ENEMY_ENABLED
+	sb $zero, 0($t0)
+	la $t0, NUM_ENEMIES
+	sb $zero, 0($t0)
+	
+	# Init LASERS, LAST_DEAD_LASER, LASER_END, NUM_LASERS
+	la $t0, LASERS
+	la $t1, LAST_DEAD_LASER
+	sw $t0, 0($t1)
+	addi $t2, $t0, 18
+	la $t1, LASERS_END
+	sw $t2, 0($t1)
+	la $t0, NUM_LASERS
+	sb $zero, 0($t0)
 	
 	jal draw_ui
 	
@@ -187,7 +249,7 @@ restart:
 	jal draw_plane
 
 	# Init obst_cd
-	li $s5, 1
+	li $s5, 25
 	# Init num_obst to 0
 	li $s4, 0
 	# Init score
@@ -195,9 +257,7 @@ restart:
 mainloop:	
 	jal key_event
 	jal move_rocks
-	
 	bgtz $s5, no_spawn_yet	# Do not spwan if the countdown is not 0
-	
 	beq $s4, $s6, hold_spawn	# Hold the spawn if there're more obstacles on
 				# screen than the maximum allowed number.
 	jal spawn_rock
@@ -211,11 +271,11 @@ mainloop:
 no_spawn_yet:
 	addi $s5, $s5, -1
 hold_spawn:
-	# Increase difficulty for each 128 + 5 * num_obst points the player get.
+	# Increase difficulty for each 128 + 25 * num_obst points the player get.
 	addi $t0, $s6, -MAX_ROCK1
 	addi $t0, $t0, 1
 	sll $t0, $t0, 7	# Multiply by 128
-	mul $t1, $s4, 5
+	mul $t1, $s4, 25
 	add $t0, $t0, $t1
 	blt $s7, $t0, no_increase_difficulty
 	beq $s6, 15, no_increase_difficulty	# We've only allocated 15 indices for OBSTS
@@ -227,6 +287,25 @@ hold_spawn:
 	addi $t1, $t1, 4
 	sw $t1, 0($t0)
 no_increase_difficulty:
+	ble $s7, 5, no_enable_enemy
+	la $t0, ENEMY_ENABLED
+	li $t1, 1
+	sb $t1, 0($t0)
+no_enable_enemy:
+# Try spawn enemies
+	la $t0, ENEMY_ENABLED
+	lb $t0, 0($t0)
+	beqz $t0, skip_enemy_resolve
+	la $t0, NUM_ENEMIES
+	lb $t1, 0($t0)
+	beq $t1, 3, skip_enemy_spawn
+	jal spawn_enemy
+skip_enemy_spawn:
+	jal move_enemies
+	
+skip_enemy_resolve:
+	
+
 	bgtz $s2, no_regenerate
 	la $t0, SP
 	lb $t1, 0($t0)
@@ -249,7 +328,7 @@ no_increase_difficulty:
 no_regenerate:
 	addi $s2, $s2, -1
 	li $v0, 32
-	li $a0, IFPS
+	li $a0, SPF
 	syscall
 	j mainloop
 mainend:	
@@ -376,6 +455,132 @@ move_skip:
 	j move_loop
 move_end:
 	# Pop $ra
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
+# This function moves all enemies 1 pixel towords the direction determined by their "dirct" field.
+move_enemies:
+	# Push $ra and $fp
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	addi $sp, $sp, -4
+	sw $fp, 0($sp)
+	move $fp, $sp
+	# Allocate local variables
+	addi $sp, $sp, -16
+	# Set index and end condition
+	la $t0, ENEMIES
+	addi $t1, $t0, 18
+	addi $t0, $t0, -6
+search_alive_enemy:
+	addi $t0, $t0, 6
+	beq $t0, $t1, move_enemies_end
+	lb $t2, 5($t0)
+	bgt $t0, $t1, prog_end
+	beqz $t2, search_alive_enemy
+	# If found an alive slot, then...
+	lb $a0, 0($t0)		# Read x
+	lb $a1, 1($t0)		# Read y
+	lb $a2, 2($t0)		# Read direct
+	lb $t3, 3($t0)		# Read move_cd
+	lb $t4, 4($t0)		# Read fire_cd
+	# Save them as local variables
+	sw $t0, -4($fp)		# Current pointer
+	sw $t1, -8($fp)		# End condition
+	sb $a0, -9($fp)		# x coord
+	sb $a1, -10($fp)		# y coord
+	sb $a2, -11($fp)		# Direction
+	sb $t3, -12($fp)		# move_cd
+	sb $t4, -13($fp)		# fire_cd
+move_again:
+	beq $a2, 0, move_e_up
+	beq $a2, 1, move_e_down
+	beq $a2, 2, move_e_left
+	beq $a2, 3, move_e_right
+	j prog_end
+move_e_up:
+	# Boundary is 6 + 5 * <addr_diff>
+	sub $t2, $t1, $t0
+	mul $t2, $t2, 5
+	addi $t2, $t2, 5
+	beq $a1, $t2, invert_movement
+	addi $a1, $a1, -1
+	jal draw_TIE
+	j update_enemy_data
+move_e_down:
+	# Boundary is 24 + 5 * <addr_diff>
+	sub $t2, $t1, $t0
+	mul $t2, $t2, 5
+	addi $t2, $t2, 24
+	beq $a1, $t2, invert_movement
+	addi $a1, $a1, 1
+	jal draw_TIE
+	j update_enemy_data
+move_e_left:
+	# Boundary is 5
+	beq $a0, 5, invert_movement
+	addi $a0, $a0, -1
+	jal draw_TIE
+	j update_enemy_data
+move_e_right:
+	# Boundary is 35
+	beq $a0, 35, invert_movement
+	addi $a0, $a0, 1
+	jal draw_TIE
+	j update_enemy_data
+invert_movement:	
+	addi $a2, $a2, 1
+	ble $a2, 3, confirm_invert
+	addi $a2, $a2, -4
+confirm_invert:
+	sb $a2, 2($t0)
+	sb $a2, -11($fp)	# Update local variable
+	j move_again
+update_enemy_data:
+	#lw $t0, -4($fp)		# Current pointer
+	#lw $t1, -8($fp)		# End condition
+	#lb $a0, -9($fp)		# x coord
+	#lb $a1, -10($fp)		# y coord
+	#lb $a2, -11($fp)		# Direction
+	#lb $t3, -12($fp)		# move_cd
+	#lb $t4, -13($fp)		# fire_cd
+	# Update the new position
+	lw $t0, -4($fp)
+	sb $a0, 0($t0)
+	sb $a1, 1($t0)
+	lb $t3, -12($fp)
+	bgtz $t3, no_new_direction
+	# Assign a new random direction for the TIE
+	li $v0, 42
+	li $a0, 0
+	li $a1, 4
+	syscall
+	sb $a0, 2($t0)
+	li $t3, 25	# Change direction again after 25 frames
+	sb $t3, 3($t0)
+	j handle_fire
+no_new_direction:
+	# Decrese move_cd
+	lb $t3, -12($fp)		# move_cd
+	addi $t3, $t3, -1
+	sb $t3, 3($t0)
+handle_fire:
+	# ================= TODO: Spawn laser ====================
+	# TODO: spawn laser if $t4 is 0
+	    # Skip if num_laser is at max
+	    # Else: randomize $t4 and store back
+	    # Spawn laser: Set value and draw sprite
+	# Else: decrese $t4 and store back
+	
+	
+	lw $t1, -8($fp)		# End condition
+	j search_alive_enemy
+	
+move_enemies_end:
+	addi $sp, $sp, 16
+	lw $fp, 0($sp)
+	addi $sp, $sp, 4
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
@@ -509,6 +714,53 @@ no_wrap:	sw $t0, 0($t7)
 	lw $ra, 4($sp)
 	addi $sp, $sp, 8
 	jr $ra
+	
+spawn_enemy:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	la $t0, ENEMIES
+	addi $t1, $t0, 18
+	# Find a dead enemy in ENEMIES
+find_enemy_slot:
+	beq $t0, $t1, found_enemy_slot
+	lb $t2, 5($t0)
+	addi $t0, $t0, 6
+	bnez $t2, find_enemy_slot
+found_enemy_slot:
+	addi $t0, $t0, -6
+	# Increase NUM_ENEMIES
+	la $t3, NUM_ENEMIES
+	lb $t4, 0($t3)
+	addi $t4, $t4, 1
+	sb $t4, 0($t3)
+	# Init enemy in ENEMIES
+	# Call RNG, decide the y coord for the enemy.
+	# y = 6 + 5 * <diff_in_addr> + rand[0, 30)
+	li $v0, 42
+	li $a0, 0
+	li $a1, 30
+	syscall
+	addi $a1, $a0, 6
+	sub $t2, $t1, $t0
+	mul $t2, $t2, 5
+	add $a1, $a1, $t2
+	
+	li $a0, 5
+	li $t3, 3		# direction
+	li $t4, 25	# move_cd
+	li $t5, 25	# fire_cd
+	li $t6, 1		# isAlive
+	sb $a0, 0($t0)
+	sb $a1, 1($t0)
+	sb $t3, 2($t0)
+	sb $t4, 3($t0)
+	sb $t5, 4($t0)
+	sb $t6, 5($t0)
+	li $a2, -1
+	jal draw_TIE
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
 
 key_event:
 	# First push $ra to stack
@@ -622,272 +874,6 @@ coor_to_addr:
 # @param const $a1, the color of the main part of the plane.
 draw_plane:
 	j draw_falcon
-	# Push $ra to stack. We need to nest functions here.
-	addi $sp, $sp, -4
-	sw $ra, 0($sp)
-	# Push previous stack frame onto the stack
-	addi $sp, $sp, -4
-	sw $fp, 0($sp)
-	# Set stack frame for this function
-	move $fp, $sp
-	# Reserve memory for local variables.
-	addi $sp, $sp, -8
-	# Init different colors.
-	sw $a0, -4($fp)	# This is movement.
-	sw $a1, -8($fp)	# This is the main color of the plane.
-	# Carry current coord to $a0 and $a1. Prepare to convert to address.
-	move $a0, $s0
-	move $a1, $s1
-	jal coor_to_addr	# Note: now $v0 is the center address of the plane.
-	# Pop variables back
-	lw $a0, -4($fp)
-	lw $t1, -8($fp)
-	# Load other color constants.
-	li $t0, DARK_GREY
-	li $t2, YELLOW
-	li $t3, BLACK
-	# Check in which way should we draw this frame
-	beq $a0, -1, drawp_whole
-	beq $a0, -2, drawp_end
-	beq $a0, 2, delta_left
-	beq $a0, 3, delta_right
-	beq $a0, 1, delta_down
-	beq $a0, 0, delta_up
-	j drawp_end
-delta_up:
-	# Draw the cockpit
-	sw $t0, 0($v0)
-	sw $t0, 4($v0)
-	# Draw new nose
-	sw $t1, 12($v0)
-	sw $t1, 16($v0)
-	# Overwrite old cockpit
-	addi $t4, $v0, WIDTH_ADDR
-	sw $t1, 0($t4)
-	sw $t1, 4($t4)
-	# Overwrite old nose
-	sw $t3, 12($t4)
-	sw $t3, 16($t4)
-	# Overwrite old right shoulder
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t3, 4($t4)
-	sw $t3, 8($t4)
-	# Draw new right pulser
-	sw $t2, -16($t4)
-	sw $t1, -12($t4)
-	# Overwrite old right remaining
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t3, 0($t4)
-	sw $t3, -12($t4)
-	sw $t3, -16($t4)
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t3, -4($t4)
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t3, -8($t4)
-	# Draw new left shoulder
-	addi $t4, $v0, -WIDTH_ADDR
-	sw $t1, 4($t4)
-	sw $t1, 8($t4)
-	# Overwrite old left pulser
-	sw $t3, -16($t4)
-	sw $t3, -12($t4)
-	# Draw left remaining
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t1, 0($t4)
-	sw $t2, -16($t4)
-	sw $t1, -12($t4)
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t1, -4($t4)
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t1, -8($t4)
-	j drawp_end
-delta_down:
-	# Draw new cockpit
-	sw $t0, 0($v0)
-	sw $t0, 4($v0)
-	# Draw new nose
-	sw $t1, 12($v0)
-	sw $t1, 16($v0)
-	# Overwrite old cockpit
-	addi $t4, $v0, -WIDTH_ADDR
-	sw $t1, 0($t4)
-	sw $t1, 4($t4)
-	# Overwrite old nose
-	sw $t3, 12($t4)
-	sw $t3, 16($t4)
-	# Overwrite old left shoulder
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t3, 4($t4)
-	sw $t3, 8($t4)
-	# Draw new left pulser
-	sw $t2, -16($t4)
-	sw $t1, -12($t4)
-	# Overwrite old left remaining
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t3, 0($t4)
-	sw $t3, -12($t4)
-	sw $t3, -16($t4)
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t3, -4($t4)
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t3, -8($t4)
-	# Draw new right shoulder
-	addi $t4, $v0, WIDTH_ADDR
-	sw $t1, 4($t4)
-	sw $t1, 8($t4)
-	# Overwrite old right pulser
-	sw $t3, -16($t4)
-	sw $t3, -12($t4)
-	# Draw right remaining
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t1, 0($t4)
-	sw $t2, -16($t4)
-	sw $t1, -12($t4)
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t1, -4($t4)
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t1, -8($t4)
-	j drawp_end
-delta_left:
-	# Redraw cockpit line
-	sw $t0, 0($v0)
-	sw $t1, 8($v0)
-	sw $t3, 20($v0)
-	sw $t1, -8($v0)
-	# Redraw left shoulder
-	addi $t4, $v0, -WIDTH_ADDR
-	sw $t3, 12($t4)
-	sw $t1, -8($t4)
-	# Redraw left pulser
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t3, 4($t4)
-	sw $t2, -16($t4)
-	sw $t1, -12($t4)
-	# Redraw left remaining
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t3, 0($t4)
-	sw $t1, -8($t4)
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t3, -4($t4)
-	sw $t1, -8($t4)
-	# Redraw right shoulder
-	addi $t4, $v0, WIDTH_ADDR
-	sw $t3, 12($t4)
-	sw $t1, -8($t4)
-	# Redraw right pulser
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t3, 4($t4)
-	sw $t2, -16($t4)
-	sw $t1, -12($t4)
-	# Redraw right remaining
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t3, 0($t4)
-	sw $t1, -8($t4)
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t3, -4($t4)
-	sw $t1, -8($t4)
-	j drawp_end
-delta_right:
-	# Redraw cockpit line
-	sw $t1, -4($v0)
-	sw $t0, 4($v0)
-	sw $t1, 16($v0)
-	sw $t3, -12($v0)
-	# Redraw left shoulder
-	addi $t4, $v0, -WIDTH_ADDR
-	sw $t1, 8($t4)
-	sw $t3, -12($t4)
-	# Redraw left pulser
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t1, 0($t4)
-	sw $t3, -20($t4)
-	sw $t2, -16($t4)
-	# Redraw left remaining
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t1, -4($t4)
-	sw $t3, -12($t4)
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t1, -8($t4)
-	sw $t3, -12($t4)
-	# Redraw right shoulder
-	addi $t4, $v0, WIDTH_ADDR
-	sw $t1, 8($t4)
-	sw $t3, -12($t4)
-	# Redraw right pulser
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t1, 0($t4)
-	sw $t3, -20($t4)
-	sw $t2, -16($t4)
-	# Redraw right remaining
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t1, -4($t4)
-	sw $t3, -12($t4)
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t1, -8($t4)
-	sw $t3, -12($t4)
-	j drawp_end
-drawp_whole:
-	# Draw cockpit
-	sw $t0 0($v0)
-	sw $t0 4($v0)
-	# Draw nose
-	sw $t1, 8($v0)
-	sw $t1, 12($v0)
-	sw $t1, 16($v0)
-	# Draw behind cockpit
-	sw $t1, -8($v0)
-	sw $t1, -4($v0)
-	# Draw right shoulder
-	addi $t4, $v0, WIDTH_ADDR
-	sw $t1, -8($t4)
-	sw $t1, -4($t4)
-	sw $t1, 0($t4)
-	sw $t1, 4($t4)
-	sw $t1, 8($t4)
-	# Draw right pulser
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t1, -12($t4)
-	sw $t1, -8($t4)
-	sw $t1, -4($t4)
-	sw $t1, 0($t4)
-	sw $t2, -16($t4)	# Draw that yellow dot
-	# Draw right wing remaining
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t1, -8($t4)
-	sw $t1, -4($t4)
-	addi $t4, $t4, WIDTH_ADDR
-	sw $t1, -8($t4)
-	# Draw left shoulder
-	addi $t4, $v0, -WIDTH_ADDR
-	sw $t1, -8($t4)
-	sw $t1, -4($t4)
-	sw $t1, 0($t4)
-	sw $t1, 4($t4)
-	sw $t1, 8($t4)
-	# Draw left pulser
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t1, -12($t4)
-	sw $t1, -8($t4)
-	sw $t1, -4($t4)
-	sw $t1, 0($t4)
-	sw $t2, -16($t4)
-	# Draw left wing remaining
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t1, -8($t4)
-	sw $t1, -4($t4)
-	addi $t4, $t4, -WIDTH_ADDR
-	sw $t1, -8($t4)
-drawp_end:
-	# Free reserved variables from stack
-	addi $sp, $sp, 8
-	# Reset frame pointer to the previous one
-	lw $fp, 0($sp)
-	addi $sp, $sp, 4
-	# Pop return address from stack
-	lw $ra, 0($sp)
-	addi $sp, $sp, 4
-	# return;
-	jr $ra
 	
 # This function draws the type 1 rock at (x, y) centralized. It takes 3 parameters:
 # x, y, and should_erase. This function assumes that the coordinates are already shifted
@@ -938,11 +924,15 @@ drawr1_shift: # Draw rock 1 shift
 	li $t2, ROCK2
 	# Test collision on nose
 	lw $t3, -8($v0)
-	bne $t3, $s3, no_collide1	# Here we're detecting whether the pixel this rock
+	bne $t3, $s3, no_collide1p	# Here we're detecting whether the pixel this rock
 				# will overwrite in this frame matches the current
 				# color of the player plane.
 	li $v1, 1
-no_collide1: # Test end 1
+	j test1_end
+no_collide1p:
+	bne $t3, TIE2, test1_end
+	#jal TIE_collision_check
+test1_end:
 	sw $t1, -4($v0)
 	sw $t2, 8($v0)
 	sw $t0, 12($v0)
@@ -954,9 +944,13 @@ no_collide1: # Test end 1
 	sw $t0, 4($t4)
 	# Test collision on left point
 	lw $t3, -4($t4)
-	bne $t3, $s3, no_collide2
+	bne $t3, $s3, no_collide2p
 	li $v1, 1
-no_collide2: # Test end 2
+	j test2_end
+no_collide2p:
+	bne $t3, TIE2, test2_end
+	#jal TIE_collision_check
+test2_end:
 	sw $t2, 0($t4)
 	addi $t4, $v0, -WIDTH_ADDR
 	sw $t0, 8($t4)
@@ -965,9 +959,13 @@ no_collide2: # Test end 2
 	sw $t0, 4($t4)
 	# Test collision on right point
 	lw $t3, -4($t4)
-	bne $t3, $s3, no_collide3
+	bne $t3, $s3, no_collide3p
 	li $v1, 1
-no_collide3: # Test end 3
+	j test3_end
+no_collide3p:
+	bne $t3, TIE2, test3_end
+	#jal TIE_collision_check
+test3_end:
 	sw $t2, 0($t4)
 	j drawr1_end
 drawr1_erase:
@@ -2064,7 +2062,274 @@ falcon_end:
 	addi $sp, $sp, 4
 	jr $ra
 	
-	
+
+# This function draws a TIE fighter at ($a0, $a1). If $a2 = -1, it draws an entire TIE fighter.
+# Otherwise, it shifts the sprite towards up, down, left, or right if $a2 is set to 0, 1, 2, 3,
+# respectively. Set $a2 to 4 to erase all from the board.
+# @param const $a0, the x coordinate of the TIE fighter.
+# @param const $a1, the y coordinate of the TIE fighter,
+# @param const $a2, how should the function draw this fighter.
+draw_TIE:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	jal coor_to_addr
+	li $t1, TIE1
+	li $t2, TIE2
+	li $t3, TIE3
+	beq $a2, -1, TIE_ALL
+	beq $a2, 0, TIE_UP
+	beq $a2, 1, TIE_DOWN
+	beq $a2, 2, TIE_LEFT
+	beq $a2, 3, TIE_RIGHT
+	beq $a2, 4, TIE_ERASE
+	j prog_end	# Signify error
+TIE_UP:	
+	sw $t1, 0($v0)
+	addi $t0, $v0, -WIDTH_ADDR
+	sw $t2, -4($t0)
+	sw $t2, 0($t0)
+	sw $t2, 4($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero, -4($t0)
+	sw $zero, -8($t0)
+	sw $zero, -12($t0)
+	sw $zero, -16($t0)
+	sw $zero, 4($t0)
+	sw $zero, 8($t0)
+	sw $zero, 12($t0)
+	sw $zero, 16($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t2, 0($t0)
+	sw $t2, -4($t0)
+	sw $t2, -8($t0)
+	sw $t2, -12($t0)
+	sw $t2, -16($t0)
+	sw $t2, 4($t0)
+	sw $t2, 8($t0)
+	sw $t2, 12($t0)
+	sw $t2, 16($t0)
+	addi $t0, $v0, WIDTH_ADDR
+	sw $t2, 0($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero -4($t0)
+	sw $zero, 4($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t2, 0($t0)
+	sw $t2, -4($t0)
+	sw $t2, -8($t0)
+	sw $t2, -12($t0)
+	sw $t2, -16($t0)
+	sw $t2, 4($t0)
+	sw $t2, 8($t0)
+	sw $t2, 12($t0)
+	sw $t2, 16($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $zero, 0($t0)
+	sw $zero, -4($t0)
+	sw $zero, -8($t0)
+	sw $zero, -12($t0)
+	sw $zero, -16($t0)
+	sw $zero, 4($t0)
+	sw $zero, 8($t0)
+	sw $zero, 12($t0)
+	sw $zero, 16($t0)
+	j TIE_end
+TIE_DOWN:	
+	sw $t1, 0($v0)
+	addi $t0, $v0, WIDTH_ADDR
+	sw $t2, -4($t0)
+	sw $t2, 0($t0)
+	sw $t2, 4($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero, -4($t0)
+	sw $zero, -8($t0)
+	sw $zero, -12($t0)
+	sw $zero, -16($t0)
+	sw $zero, 4($t0)
+	sw $zero, 8($t0)
+	sw $zero, 12($t0)
+	sw $zero, 16($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t2, 0($t0)
+	sw $t2, -4($t0)
+	sw $t2, -8($t0)
+	sw $t2, -12($t0)
+	sw $t2, -16($t0)
+	sw $t2, 4($t0)
+	sw $t2, 8($t0)
+	sw $t2, 12($t0)
+	sw $t2, 16($t0)
+	addi $t0, $v0, -WIDTH_ADDR
+	sw $t2, 0($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero -4($t0)
+	sw $zero, 4($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t2, 0($t0)
+	sw $t2, -4($t0)
+	sw $t2, -8($t0)
+	sw $t2, -12($t0)
+	sw $t2, -16($t0)
+	sw $t2, 4($t0)
+	sw $t2, 8($t0)
+	sw $t2, 12($t0)
+	sw $t2, 16($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $zero, 0($t0)
+	sw $zero, -4($t0)
+	sw $zero, -8($t0)
+	sw $zero, -12($t0)
+	sw $zero, -16($t0)
+	sw $zero, 4($t0)
+	sw $zero, 8($t0)
+	sw $zero, 12($t0)
+	sw $zero, 16($t0)
+	j TIE_end
+TIE_LEFT:
+	sw $t1, 0($v0)
+	sw $t2, -4($v0)
+	sw $t2, 4($v0)
+	sw $zero, 8($v0)
+	addi $t0, $v0, -WIDTH_ADDR
+	sw $t2, -4($t0)
+	sw $zero, 8($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero, 4($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero, 4($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t2, -16($t0)
+	sw $zero, 20($t0)
+	addi $t0, $v0, WIDTH_ADDR
+	sw $t2, -4($t0)
+	sw $zero, 8($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero, 4($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero, 4($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t2, -16($t0)
+	sw $zero, 20($t0)
+	j TIE_end
+TIE_RIGHT:
+	sw $t1, 0($v0)
+	sw $t2, 4($v0)
+	sw $t2, -4($v0)
+	sw $zero, -8($v0)
+	addi $t0, $v0, -WIDTH_ADDR
+	sw $t2, 4($t0)
+	sw $zero, -8($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero, -4($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero, -4($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t2, 16($t0)
+	sw $zero, -20($t0)
+	addi $t0, $v0, WIDTH_ADDR
+	sw $t2, 4($t0)
+	sw $zero, -8($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero, -4($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	sw $zero, -4($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t2, 16($t0)
+	sw $zero, -20($t0)
+	j TIE_end
+TIE_ALL:	
+	sw $t1, 0($v0)
+	sw $t2, 4($v0)
+	sw $t2, -4($v0)
+	addi $t0, $v0, WIDTH_ADDR
+	sw $t2, 0($t0)
+	sw $t2, 4($t0)
+	sw $t2, -4($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t2, -16($t0)
+	sw $t2, -12($t0)
+	sw $t2, -8($t0)
+	sw $t2, -4($t0)
+	sw $t2, 0($t0)
+	sw $t2, 4($t0)
+	sw $t2, 8($t0)
+	sw $t2, 12($t0)
+	sw $t2, 16($t0)
+	addi $t0, $v0, -WIDTH_ADDR
+	sw $t2, 0($t0)
+	sw $t2, 4($t0)
+	sw $t2, -4($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t2, -16($t0)
+	sw $t2, -12($t0)
+	sw $t2, -8($t0)
+	sw $t2, -4($t0)
+	sw $t2, 0($t0)
+	sw $t2, 4($t0)
+	sw $t2, 8($t0)
+	sw $t2, 12($t0)
+	sw $t2, 16($t0)
+	j TIE_end
+TIE_ERASE:
+	add $t1, $zero, $zero
+	add $t2, $zero, $zero
+	add $t3, $zero, $zero
+	sw $t1, 0($v0)
+	sw $t2, 4($v0)
+	sw $t2, -4($v0)
+	addi $t0, $v0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t3, 0($t0)
+	addi $t0, $t0, WIDTH_ADDR
+	sw $t2, -8($t0)
+	sw $t2, -4($t0)
+	sw $t2, 0($t0)
+	sw $t2, 4($t0)
+	sw $t2, 8($t0)
+	addi $t0, $v0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t3, 0($t0)
+	addi $t0, $t0, -WIDTH_ADDR
+	sw $t2, -8($t0)
+	sw $t2, -4($t0)
+	sw $t2, 0($t0)
+	sw $t2, 4($t0)
+	sw $t2, 8($t0)
+TIE_end:	
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+
+
+
+
+
 	
 	
 	
