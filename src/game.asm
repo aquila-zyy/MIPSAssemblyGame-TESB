@@ -39,7 +39,7 @@ MAP:	.word	0:16384	# The map is 128x128 = 16384 in size
 OBSTS:	.byte	0:60	# struct obst {
 			#     char x;
 			#     char y;
-			#     char speed;
+			#     char speed;	// usused
 			#     char alive;
 			# }
 			# We can have at most 10 obstacles simultaneously.
@@ -83,7 +83,15 @@ ENEMIES:		.byte	0:18
 			#     char fire_cd;
 			#     char isAlive
 			# }
-ENEMY_ENABLED:	.half	0	# A boolean value, to indicate whether enemies can spawn.
+ENEMY_ENABLED:	.half	0	# This value can be positive or negative.
+				# When it's negative, it represents the number of ticks before
+				# a new wave of enemies will spawn.
+				# After a spawning a wave, this will be set to a small positive
+				# number and start to countdown. Before it becomes 0, destroyed
+				# enemy ship will immediately respawn.
+				# After it counts to 0 again, it will be set to a random large
+				# negative number.
+				
 NUM_ENEMIES:	.byte	0	# Number of enemies currectly on screen
 LASERS:		.byte	0:30
 			# struct laser {
@@ -92,6 +100,9 @@ LASERS:		.byte	0:30
 			#     char isAlive;
 			# }
 NUM_LASERS:	.byte	0
+
+#DIFFICULTY:	.word	0	# This determines the hp of enemy ships, and the length of
+#				# intervals between enemy waves.
 			
 # Constants
 .eqv	BASE_ADDRESS	0x10010000	# The top left of the map
@@ -111,10 +122,15 @@ NUM_LASERS:	.byte	0
 
 # Game mechanics
 .eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
-.eqv	SPF		15		# Inverse of FPS
+.eqv	SPF		40		# Inverse of FPS
 .eqv	SP_REGENERATION_DELAY	250	# Ticks before SP starts to regenerate
 .eqv	SP_REGENERATION_RATE	50	# Ticks between two SP regenerations
 .eqv	NUM_LASERS_MAX		10
+.eqv	FIRST_WAVE		1000	# Number of ticks before the first wave of enemies
+					# will spawn.
+.eqv	MAX_HP			5
+.eqv	MAX_SP			3
+
 
 # Colors
 .eqv	WHITE		0x00ffffff
@@ -149,8 +165,8 @@ NUM_LASERS:	.byte	0
 #   come quite handy as global variables.
 # $s2 is the shield regeneration counter. After some ticks of not taking any damage the 
 #   shield will start to regenerate 1 point in each certain interval.
-# $s3 is the color of the plane. We need to read the color every time we need to repaint the
-# plane so it's faster to not store it in memory.
+# $s3 is the color of the ship. We need to read the color every time we need to repaint the
+# ship so it's faster to not store it in memory.
 # $s4 is number of obstacles on screen. Since we need to check it every frame, it's better
 #   that we keep it in the register file.
 # $s5 is obstacle count down (obst_cd), the delay before another obstacle should spawn. Again, 
@@ -193,16 +209,20 @@ restart:
 	la $t0, HIT
 	sh $zero, 0($t0)
 	la $t0, HP
-	li $t1, 10
+	li $t1, MAX_HP
 	sb $t1, 0($t0)
 	la $t0, HP_BAR
-	li $t1, 43
+	li $t2, 13
+	mul $t1, $t1, 3
+	add $t1, $t1, $t2
 	sb $t1, 0($t0)
 	la $t0, SP
-	li $t1, 5
+	li $t1, MAX_SP
 	sb $t1, 0($t0)
 	la $t0, SP_BAR
-	li $t1, 28
+	li $t2, 13
+	mul $t1, $t1, 3
+	add $t1, $t1, $t2
 	sb $t1, 0($t0)
 	
 	# Init regeneration cd, max_obst, binary score.
@@ -231,7 +251,7 @@ restart:
 	sb $zero, 16($t0)
 	sb $zero, 17($t0)
 	la $t0, ENEMY_ENABLED
-	li $t1, -100
+	li $t1, -FIRST_WAVE
 	sh $t1, 0($t0)
 	la $t0, NUM_ENEMIES
 	sb $zero, 0($t0)
@@ -259,16 +279,20 @@ restart:
 	la $t0, NUM_LASERS
 	sb $zero, 0($t0)
 	
+	## Init DIFFICULTY
+	#la $t0, DIFFICULTY
+	#sw $zero, 0($t0)
+	
 	jal draw_ui
 	
-	# Draw player plane
+	# Draw player ship
 	li $s0, 5
 	li $s1, 79
 	#li $s3, RED	# Default color is red
 	li $s3, 0x00c8c8c8
 	li $a0, -1	# Draw all, not only the shifted.
 	move $a1, $s3
-	jal draw_plane
+	jal draw_ship
 
 	# Init obst_cd
 	li $s5, 25
@@ -346,12 +370,7 @@ enemy_approching_count_up:
 no_print_warning:
 	bltz $t3, skip_enemy_spawn_only_move
 	# If count to 0, set it to a positive value
-	li $a0, 0
-	li $a1, 500
-	li $v0, 42
-	syscall
-	move $t1, $a0
-	addi $t1, $t1, 250
+	addi $t1, $t1, 50
 	sh $t1, 0($t0)
 	j spawn_enemy_attempt
 enemy_chasing_count_down:
@@ -364,7 +383,9 @@ enemy_chasing_count_down:
 	li $v0, 42
 	syscall
 	sub $t2, $zero, $a0
-	addi $t2, $t2, -250
+	addi $t2, $t2, -1000
+	mul $t3, $s6, 50	# Accelerate next wave base on max_obst (difficulty)
+	add $t2, $t2, $t3
 	sh $t2, 0($t0)
 	li $a0, 15
 	li $a1, 9
@@ -406,7 +427,7 @@ skip_enemy_spawn_only_move:
 	bgtz $s2, no_regenerate
 	la $t0, SP
 	lb $t1, 0($t0)
-	bge $t1, 5, no_regenerate
+	bge $t1, MAX_SP, no_regenerate
 	addi $t1, $t1, 1
 	sb $t1, 0($t0)
 	la $t0, SP_BAR
@@ -430,40 +451,7 @@ no_regenerate:
 	syscall
 	j mainloop
 mainend:	
-	# Draw "GAME OVER"
-	li $a0, 48
-	li $a1, 64
-	li $a2, RED
-	jal draw_G
-	li $a0, 52
-	li $a1, 64
-	li $a2, RED
-	jal draw_A
-	li $a0, 56
-	li $a1, 64
-	li $a2, RED
-	jal draw_M
-	li $a0, 60
-	li $a1, 64
-	li $a2, RED
-	jal draw_E
-	
-	li $a0, 64
-	li $a1, 64
-	li $a2, RED
-	jal draw_O
-	li $a0, 68
-	li $a1, 64
-	li $a2, RED
-	jal draw_V
-	li $a0, 72
-	li $a1, 64
-	li $a2, RED
-	jal draw_E
-	li $a0, 76
-	li $a1, 64
-	li $a2, RED
-	jal draw_R
+	jal draw_gameover
 restart_key_detect:
 	li $t9, KEY_DETECT
 	lw $t8, 0($t9)
@@ -480,7 +468,7 @@ prog_end:
 # This function checks the OBSTS array and moves all "living" items to the left by 1 pixel. 
 # If any item reaches the left end point of the screen, this function will set its living state
 # to 0, and call draw_rock to erase it from the screen.
-# This function also checks if any rock has collided with the player plane in this frame. 
+# This function also checks if any rock has collided with the player ship in this frame. 
 # Collisions will cause the rock to disappear and an HP deduction.
 move_rocks:
 	# $t0 points to the start of the obstacle array, and we shift it as we progress.
@@ -542,9 +530,9 @@ collision_happened:
 	jal draw_rock1
 	# Branch, if it is a TIE who should be resolved
 	bne $v1, -1, collision_with_TIE
-	# Redraw plane since we might have erased some part of the plane along with the rock.
+	# Redraw ship since we might have erased some part of the ship along with the rock.
 	li $a0, -1
-	jal draw_plane
+	jal draw_ship
 	addi $s4, $s4, -1	# Shrink num_obst
 	jal handle_damage
 	li $a0, 0
@@ -556,7 +544,7 @@ collision_happened:
 	# Check if the HP is 0, jump to game over if so.
 	la $t0, HP	# Load HP address into $t0
 	lb $t1, 0($t0)	# Load HP value into $t1
-	beqz $t1, mainend
+	blez $t1, mainend
 no_collision:
 	# Only now we pop $t0 and $t1
 	lw $t1, 0($sp)
@@ -787,7 +775,8 @@ found_enemy_slot:
 	li $t3, 3		# direction
 	li $t4, 25	# move_cd
 	li $t5, 25	# fire_cd
-	li $t6, 2		# isAlive
+	div $t6, $s6, 2	# isAlive (or HP) is based on the current max_obst, and ranges from
+			# 3 to 7.
 	sb $a0, 0($t0)
 	sb $a1, 1($t0)
 	sb $t3, 2($t0)
@@ -960,6 +949,16 @@ crash_with_player:
 	lb $a1, -10($fp)		# y coord
 	li $a2, 4
 	jal draw_TIE
+	li $a0, 0
+	li $a1, 0
+	li $a2, 0
+	li $a3, 1
+	jal add_hit
+	jal draw_hit
+	# Check if the HP is 0, jump to game over if so.
+	la $t0, HP	# Load HP address into $t0
+	lb $t1, 0($t0)	# Load HP value into $t1
+	blez $t1, mainend
 search_alive_enemy_continue:
 	lw $t0, -4($fp)
 	lw $t1, -8($fp)		# End condition
@@ -1031,8 +1030,33 @@ find_living_laser:
 	sb $a0, 0($t0)
 	li $a2, 0
 	jal draw_laser
+	beqz $v1, move_laser_continue
+	# If it's a hit, despawn_this_laser then redraw the ship. Also add hit count
+	lw $t0, -4($fp)
+	sb $zero 2($t0)	# Set dead
+	li $a2, 1		# Set erase
+	jal draw_laser
+	# Decrease num_lasers
+	la $t0, NUM_LASERS
+	lb $t1, 0($t0)
+	addi $t1, $t1, -1
+	sb $t1, 0($t0)
+	li $a0, -1
+	jal draw_ship
+	li $a0, 0
+	li $a1, 0
+	li $a2, 0
+	li $a3, 1
+	jal add_hit
+	jal draw_hit
+	jal handle_damage
+	# Check if the HP is 0, jump to game over if so.
+	la $t0, HP	# Load HP address into $t0
+	lb $t1, 0($t0)	# Load HP value into $t1
+	blez $t1, mainend
 	j move_laser_continue
 despawn_this_laser:
+	lw $t0, -4($fp)	# Load main pointer
 	sb $zero 2($t0)	# Set dead
 	li $a2, 1		# Set erase
 	jal draw_laser
@@ -1066,14 +1090,14 @@ coor_to_addr:
 	addi $v0, $v0, BASE_ADDRESS	# Actual memory address
 	jr $ra		# return
 
-# This function reads global variable $s0, $s1, and draws the player plane at ($s0, $s1) centralized. 
-# It takes two parameters: movement($a0) and color($a1). Set movement to -1 to draw an entire plane. 
-# Set movement to 0, 1, 2, or 3 to indicate the plane has moved towards up, down, left, or right, respectively. 
+# This function reads global variable $s0, $s1, and draws the player ship at ($s0, $s1) centralized. 
+# It takes two parameters: movement($a0) and color($a1). Set movement to -1 to draw an entire ship. 
+# Set movement to 0, 1, 2, or 3 to indicate the ship has moved towards up, down, left, or right, respectively. 
 # This function only draws the difference between two frames if possible. Therefore simply changing the color
 # on the fly would cause 
-# @param const $a0, the direction that the plane has moved since the last frame.
-# @param const $a1, the color of the main part of the plane.
-draw_plane:
+# @param const $a0, the direction that the ship has moved since the last frame.
+# @param const $a1, the color of the main part of the ship.
+draw_ship:
 	j draw_falcon
 	
 # This function draws the type 1 rock at (x, y) centralized. It takes 3 parameters:
@@ -1334,28 +1358,28 @@ ke_d:	bge $s0, 122, key_end # Skip if x is already at right border
 	addi $s0, $s0, 1
 	li $a0, 3
 	move $a1, $s3
-	jal draw_plane
+	jal draw_ship
 	j key_end
 ke_a:	ble $s0, 5, key_end # Skip if x is already at left border
 	# Update coordinates
 	addi $s0, $s0, -1
 	li $a0, 2
 	move $a1, $s3
-	jal draw_plane
+	jal draw_ship
 	j key_end
 ke_s:	bge $s1, 122, key_end # Skip if y is already at bottom border
 	# Update coordinates
 	addi $s1, $s1, 1
 	li $a0, 1
 	move $a1, $s3
-	jal draw_plane
+	jal draw_ship
 	j key_end
 ke_w:	ble $s1, 35, key_end # Skip if y is already at top border
 	# Update coordinates
 	addi $s1, $s1, -1
 	li $a0, 0
 	move $a1, $s3
-	jal draw_plane
+	jal draw_ship
 	j key_end
 ke_p:	addi $sp, $sp, 4
 	j PAINT_BLACK_SCREEN
@@ -1470,7 +1494,8 @@ draw_ui:
 	# Draw HP bar
 	li $a0, 14
 	li $a1, 21
-	li $a2, 30
+	li $a2, MAX_HP
+	mul $a2, $a2, 3
 	li $a3, RED
 	jal draw_hori
 	li $a1, 22
@@ -1515,7 +1540,8 @@ draw_ui:
 	# Draw SP bar
 	li $a0, 14
 	li $a1, 15
-	li $a2, 15
+	li $a2, MAX_SP
+	mul $a2, $a2, 3
 	li $a3, CYAN
 	jal draw_hori
 	li $a1, 16
@@ -1549,7 +1575,78 @@ draw_ui:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
+	
+draw_gameover:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	
+	# Draw "GAME OVER"
+	li $a0, 48
+	li $a1, 64
+	li $a2, RED
+	jal draw_G
+	li $a0, 52
+	li $a1, 64
+	li $a2, RED
+	jal draw_A
+	li $a0, 56
+	li $a1, 64
+	li $a2, RED
+	jal draw_M
+	li $a0, 60
+	li $a1, 64
+	li $a2, RED
+	jal draw_E
+	li $a0, 64
+	li $a1, 64
+	li $a2, RED
+	jal draw_O
+	li $a0, 68
+	li $a1, 64
+	li $a2, RED
+	jal draw_V
+	li $a0, 72
+	li $a1, 64
+	li $a2, RED
+	jal draw_E
+	li $a0, 76
+	li $a1, 64
+	li $a2, RED
+	jal draw_R
+	jal draw_score_gameover
+	
+	lw $ra, 0($sp)
+	add $sp, $sp, 4
+	jr $ra
 
+draw_score_gameover:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	la $t4, SCORE
+	li $a1, 70
+	lbu $t1, 0($t4)	# $t1 <- AAAABBBB
+	lbu $t3, 1($t4)	# $t3 <- CCCCDDDD
+	srl $t6, $t1, 4	# $t0 <- 0000AAAA
+	srl $t8, $t3, 4	# $t2 <- 0000CCCC
+	andi $t7, $t1, 15	# $t1 <- 0000BBBB
+	andi $t9, $t3, 15	# $t3 <- 0000DDDD
+	li $a2, YELLOW
+	li $a0, 56
+	move $a3, $t6
+	jal draw_digit
+	li $a0, 60
+	move $a3, $t7
+	jal draw_digit
+	li $a0, 64
+	move $a3, $t8
+	jal draw_digit
+	li $a0, 68
+	move $a3, $t9
+	jal draw_digit
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+		
 draw_score:
 	la $t4, SCORE
 	la $t6, SCORE_MODIFIED
@@ -2702,16 +2799,10 @@ TIE_end:
 	jr $ra
 
 detect_collision_TIE:
-	addi $t0, $v0, -WIDTH_ADDR
-	addi $t0, $t0, -WIDTH_ADDR
-	addi $t0, $t0, -WIDTH_ADDR
-	addi $t0, $t0, -WIDTH_ADDR
+	addi $t0, $v0, -2048
 	addi $t1, $t0, 16
 	addi $t0, $t0, -16
-	addi $t2, $v0, WIDTH_ADDR
-	addi $t2, $t2, WIDTH_ADDR
-	addi $t2, $t2, WIDTH_ADDR
-	addi $t2, $t2, WIDTH_ADDR
+	addi $t2, $v0, 2048
 	addi $t3, $t2, 16
 	addi $t2, $t2, -16
 	lw $t0, 0($t0)
@@ -2759,6 +2850,8 @@ draw_full_laser:
 	sw $t1, 4($v0)
 	j draw_laser_done
 shift_laser:
+	jal detect_laser_hit
+	li $t1, GREEN
 	sw $t1, -4($v0)
 	sw $t1, 0($v0)
 	sw $t1, 4($v0)
@@ -2776,5 +2869,28 @@ draw_laser_done:
 	addi $sp, $sp, 4
 	jr $ra
 	
-	
+detect_laser_hit:
+	li $v1, 0
+	lw $t0, 8($v0)
+	lw $t1, 12($v0)
+	lw $t2, 16($v0)
+	beq $t0, Falcon1, ship_hit
+	beq $t1, Falcon1, ship_hit
+	beq $t2, Falcon1, ship_hit
+	beq $t0, Falcon2, ship_hit
+	beq $t1, Falcon2, ship_hit
+	beq $t2, Falcon2, ship_hit
+	beq $t0, Falcon3, ship_hit
+	beq $t1, Falcon3, ship_hit
+	beq $t2, Falcon3, ship_hit
+	beq $t0, Falcon4, ship_hit
+	beq $t1, Falcon4, ship_hit
+	beq $t2, Falcon4, ship_hit
+	beq $t0, Falcon5, ship_hit
+	beq $t1, Falcon5, ship_hit
+	beq $t2, Falcon5, ship_hit
+	jr $ra
+ship_hit:
+	li $v1, 1
+	jr $ra
 	
