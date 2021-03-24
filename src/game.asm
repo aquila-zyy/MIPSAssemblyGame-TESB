@@ -11,18 +11,18 @@
 # - Display width in pixels: 512 (128 visual pixels)
 # - Display height in pixels: 512 (128 visual pixels)
 # - Base Address for Display: 0x10010000 (static data) 
-# (!) The board is too big to fit into $gp. Interferences with other chunks were observed.
 #
 # Which milestones have been reached in this submission?
 # (See the assignment handout for descriptions of the milestones)
-# - Milestone None!
+# - Milestone 4
 #
 # Which approved features have been implemented for milestone 4?
 # (See the assignment handout for the list of additional features) 
-# 1. (fill in the feature, if any)
-# 2. (fill in the feature, if any) 
-# 3. (fill in the feature, if any) 
-# ... (add more if necessary) 
+# 1. b. Increase the difficulty as the game progresses.
+# 2. c. Scoring system.
+# 3. e. Enemy ships
+# 4. g. Smooth graphics (expect the Falcon cus its sprite is too complicated 
+#       to be worth the effort to do the erasing & redrawing)
 #
 # Link to video demonstration for final submission: 
 # - (insert YouTube / MyMedia / other URL here). Make sure we can view it! 
@@ -31,11 +31,22 @@
 # - yes / no / yes, and please share this project github link as well! 
 # 
 # Any additional information that the TA needs to know: 
-# - (write here, if any) 
-# 
+# - The board is too big to fit into $gp. Interferences with other chunks were observed. Therefore 
+# I have to use static data to store the bit map.
+# - "It's the ship that made the Kessel Run in less than twelve parsecs!" 
 #####################################################################
 .data	
 MAP:	.word	0:16384	# The map is 128x128 = 16384 in size
+# Game mechanics
+.eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
+.eqv	SPF		40		# Inverse of FPS
+.eqv	SP_REGENERATION_DELAY	250	# Ticks before SP starts to regenerate
+.eqv	SP_REGENERATION_RATE	50	# Ticks between two SP regenerations
+.eqv	NUM_LASERS_MAX		10
+.eqv	FIRST_WAVE		660	# Number of ticks before the first wave of enemies
+					# will spawn.
+.eqv	MAX_HP			5
+.eqv	MAX_SP			3
 OBSTS:	.byte	0:60	# struct obst {
 			#     char x;
 			#     char y;
@@ -100,9 +111,6 @@ LASERS:		.byte	0:30
 			#     char isAlive;
 			# }
 NUM_LASERS:	.byte	0
-
-#DIFFICULTY:	.word	0	# This determines the hp of enemy ships, and the length of
-#				# intervals between enemy waves.
 			
 # Constants
 .eqv	BASE_ADDRESS	0x10010000	# The top left of the map
@@ -119,18 +127,6 @@ NUM_LASERS:	.byte	0
 .eqv	KEY_W		0x77
 .eqv	KEY_P		0x70
 .eqv	KEY_J		0x6a
-
-# Game mechanics
-.eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
-.eqv	SPF		40		# Inverse of FPS
-.eqv	SP_REGENERATION_DELAY	250	# Ticks before SP starts to regenerate
-.eqv	SP_REGENERATION_RATE	50	# Ticks between two SP regenerations
-.eqv	NUM_LASERS_MAX		10
-.eqv	FIRST_WAVE		1000	# Number of ticks before the first wave of enemies
-					# will spawn.
-.eqv	MAX_HP			5
-.eqv	MAX_SP			3
-
 
 # Colors
 .eqv	WHITE		0x00ffffff
