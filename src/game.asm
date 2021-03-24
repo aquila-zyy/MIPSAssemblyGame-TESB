@@ -11,7 +11,7 @@
 # - Display width in pixels: 512 (128 visual pixels)
 # - Display height in pixels: 512 (128 visual pixels)
 # - Base Address for Display: 0x10010000 (static data) 
-# (!) The board is too big to fit into $gp. Distruption with other chunks was observed (!)
+# (!) The board is too big to fit into $gp. Interferences with other chunks were observed.
 #
 # Which milestones have been reached in this submission?
 # (See the assignment handout for descriptions of the milestones)
@@ -83,8 +83,8 @@ ENEMIES:		.byte	0:18
 			#     char fire_cd;
 			#     char isAlive
 			# }
-ENEMY_ENABLED:	.byte	0
-NUM_ENEMIES:	.byte	0
+ENEMY_ENABLED:	.byte	0	# A boolean value, to indicate whether enemies can spawn.
+NUM_ENEMIES:	.byte	0	# Number of enemies currectly on screen
 LASERS:		.byte	0:18
 			# struct laser {
 			#     char x;
@@ -95,20 +95,14 @@ LAST_DEAD_LASER:	.word	0
 LASERS_END:	.word	0
 NUM_LASERS:	.byte	0
 			
-
+# Constants
 .eqv	BASE_ADDRESS	0x10010000	# The top left of the map
 .eqv	PLAY_ADDRESS	0x10014410	# The top left of the actual game
 .eqv	WIDTH		128
 .eqv	HEIGHT		128
 .eqv	WIDTH_ADDR	512		# The amount of address shift between two neighbouring pixels
 					# on different rows.
-# Game mechanics
-.eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
-.eqv	SPF		15		# Inverse of FPS
-.eqv	SP_REGENERATION_DELAY	250	# Ticks before SP starts to regenerate
-.eqv	SP_REGENERATION_RATE	50	# Ticks between two SP regenerations
 
-# Keys
 .eqv	KEY_DETECT	0xffff0000	# This address will be set to 1 if a key is pressed when syscalled
 .eqv	KEY_A		0x61
 .eqv	KEY_D		0x64
@@ -116,6 +110,14 @@ NUM_LASERS:	.byte	0
 .eqv	KEY_W		0x77
 .eqv	KEY_P		0x70
 .eqv	KEY_J		0x6a
+
+# Game mechanics
+.eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
+.eqv	SPF		15		# Inverse of FPS
+.eqv	SP_REGENERATION_DELAY	250	# Ticks before SP starts to regenerate
+.eqv	SP_REGENERATION_RATE	50	# Ticks between two SP regenerations
+
+
 # Colors
 .eqv	WHITE		0x00ffffff
 .eqv	RED		0x00ac3232
@@ -131,6 +133,12 @@ NUM_LASERS:	.byte	0
 .eqv	ROCK1		0x00696a6a
 .eqv	ROCK2		0x008c8f91
 .eqv	ROCK3		0x00b9b9b9
+
+.eqv	Falcon1		0x00545454
+.eqv	Falcon2		0x00c8c8c8
+.eqv	Falcon3		0x00e2e2e2
+.eqv	Falcon4		0x008d8db3
+.eqv	Falcon5		0x0064647e
 
 .eqv	TIE1		0x00303030
 .eqv	TIE2		0x009c9c9c
@@ -468,10 +476,11 @@ collision_with_TIE:
 	jal handle_TIE_damage
 	j no_collision
 	
-# This function handles the visual and logical effects when player takes a hit.
+# This function handles the visual effects when player takes a hit.
 # When there's shield left, deduct 1 SP from the SP bar. Otherwise, deduct
 # 1 HP from the HP bar. Whichever is deducted, reset the hit_counter ($s2)
 # to some value so that the shield will stop regenerating.
+# Call this function repeatedly to deal more damage.
 handle_damage:
 	# Push $ra on stack
 	addi $sp, $sp, -4
@@ -534,7 +543,11 @@ handle_TIE_damage:
 	lb $a0, 0($v1)	# Load x
 	lb $a1, 1($v1)	# Load y
 	li $a2, 4		# Ask draw_TIE to erase it
+	addi $sp, $sp, -4
+	sw $v1, 0($sp)
 	jal draw_TIE
+	lw $v1, 0($sp)
+	addi $sp, $sp, 4
 	sb $zero, 5($v1)	# Set it dead
 	addi $s4, $s4, -1	# Shrink num_obst
 	# Shrink NUM_ENEMIES
@@ -727,6 +740,7 @@ move_e_up:
 	addi $t2, $t2, 35
 	ble $a1, $t2, invert_movement
 	addi $a1, $a1, -1
+	sb $a1, -10($fp)	# Update local variable
 	jal draw_TIE
 	j update_enemy_data
 move_e_down:
@@ -737,18 +751,21 @@ move_e_down:
 	addi $t2, $t2, 55
 	bge $a1, $t2, invert_movement
 	addi $a1, $a1, 1
+	sb $a1, -10($fp)	# Update local variable
 	jal draw_TIE
 	j update_enemy_data
 move_e_left:
 	# Boundary is 5
 	beq $a0, 5, invert_movement
 	addi $a0, $a0, -1
+	sb $a0, -9($fp)	# Update local variable
 	jal draw_TIE
 	j update_enemy_data
 move_e_right:
 	# Boundary is 35
 	beq $a0, 35, invert_movement
 	addi $a0, $a0, 1
+	sb $a0, -9($fp)	# Update local variable
 	jal draw_TIE
 	j update_enemy_data
 invert_movement:	
@@ -767,6 +784,7 @@ update_enemy_data:
 	#lb $a2, -11($fp)		# Direction
 	#lb $t3, -12($fp)		# move_cd
 	#lb $t4, -13($fp)		# fire_cd
+	bnez $v1, crash_with_player
 	# Update the new position
 	lw $t0, -4($fp)
 	sb $a0, 0($t0)
@@ -796,9 +814,25 @@ handle_fire:
 	# Else: decrese $t4 and store back
 	
 	
+	j search_alive_enemy_continue
+crash_with_player:
+	jal handle_damage
+	jal handle_damage
+	jal handle_damage
+	lw $t0, -4($fp)		# Current pointer
+	sb $zero, 5($t0)		# Kill the TIE fighter
+	la $t1, NUM_ENEMIES
+	lb $t2, 0($t1)
+	addi $t2, $t2, -1
+	sb $t2, 0($t1)		# Shrink NUM_ENEMIES
+	lb $a0, -9($fp)		# x coord
+	lb $a1, -10($fp)		# y coord
+	li $a2, 4
+	jal draw_TIE
+search_alive_enemy_continue:
+	lw $t0, -4($fp)
 	lw $t1, -8($fp)		# End condition
 	j search_alive_enemy
-	
 move_enemies_end:
 	addi $sp, $sp, 16
 	lw $fp, 0($sp)
@@ -806,46 +840,6 @@ move_enemies_end:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
-	
-
-	
-# This function draws a horizontal line starting from (x, y) inclusive to (x, y+k) exclusive with color c,
-# @param const $a0, the x coordinate of the left end point of the line.
-# @param const $a1, the y coordinate of the left end point of the line.
-# @param const $a2, the length of the line.
-# @param const $a3, the color of the line.
-draw_hori:
-	# Call coor_to_addr to calculate the actual address of the starting point
-	addi $sp, $sp, -4
-	sw $ra, 0($sp)	# Push $ra to stack for nested function calls
-	jal coor_to_addr
-	lw $ra, 0($sp)	# Pop $ra from stack
-	addi $sp, $sp, 4
-	move $t2, $a2
-dh_do:	sw $a3, 0($v0)	# Paint color to the map
-	addi $t2, $t2, -1	# k--
-	addi $v0, $v0, 4	# Advance pointer
-	bgtz $t2, dh_do	# if k>0, loop
-	jr $ra	# return
-	
-# This function draws a vertical line starting from (x, y) inclusive to (x+k, y) exclusive with color c,
-# @param const $a0, the x coordinate of the top end point of the line.
-# @param const $a1, the y coordinate of the top end point of the line.
-# @param const $a2, the length of the line.
-# @param const $a3, the color of the line.
-draw_vert:
-	# Call coor_to_addr to calculate the actual address of the starting point
-	addi $sp, $sp, -4
-	sw $ra, 0($sp)	# Push $ra to stack for nested function calls
-	jal coor_to_addr	# coor_to_addr does not modify $a0 or $a1
-	lw $ra, 0($sp)	# Pop $ra from stack
-	addi $sp, $sp, 4
-	move $t2, $a2
-dv_do:	sw $a3, 0($v0)	# Paint color to the map
-	addi $t2, $t2, -1	# k--
-	addi $v0, $v0, WIDTH_ADDR	# Advance pointer
-	bgtz $t2, dv_do	# if k>0, loop
-	jr $ra	# return
 
 
 # This function converts a set of coordinates (x, y) to a memory address on the bit map, 
@@ -1005,10 +999,10 @@ test_object_collision:
 	bnez $v1, already_found
 	lw $t0, 0($sp)
 	beqz $t0, no_collision_possible
-	beq $t0, 0x00c8c8c8, is_player	# Falcon outline
-	beq $t0, 0x00545454, is_player	# Falcon cockpit
-	beq $t0, 0x008d8db3, is_player	# Falcon light blue
-	beq $t0, 0x0064647e, is_player	# Falcon dark blue
+	beq $t0, Falcon1, is_player	# Falcon cockpit
+	beq $t0, Falcon2, is_player	# Falcon outline
+	beq $t0, Falcon3, is_player	# Falcon light blue
+	beq $t0, Falcon4, is_player	# Falcon dark blue
 	j not_player
 is_player:
 	# Is player
@@ -1467,10 +1461,49 @@ drawd8:	jal draw_8
 	j drawd_end
 drawd9:	jal draw_9
 	j drawd_end
+	j prog_end
 drawd_end:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
+	
+# This function draws a horizontal line starting from (x, y) inclusive to (x, y+k) exclusive with color c,
+# @param const $a0, the x coordinate of the left end point of the line.
+# @param const $a1, the y coordinate of the left end point of the line.
+# @param const $a2, the length of the line.
+# @param const $a3, the color of the line.
+draw_hori:
+	# Call coor_to_addr to calculate the actual address of the starting point
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)	# Push $ra to stack for nested function calls
+	jal coor_to_addr
+	lw $ra, 0($sp)	# Pop $ra from stack
+	addi $sp, $sp, 4
+	move $t2, $a2
+dh_do:	sw $a3, 0($v0)	# Paint color to the map
+	addi $t2, $t2, -1	# k--
+	addi $v0, $v0, 4	# Advance pointer
+	bgtz $t2, dh_do	# if k>0, loop
+	jr $ra	# return
+	
+# This function draws a vertical line starting from (x, y) inclusive to (x+k, y) exclusive with color c,
+# @param const $a0, the x coordinate of the top end point of the line.
+# @param const $a1, the y coordinate of the top end point of the line.
+# @param const $a2, the length of the line.
+# @param const $a3, the color of the line.
+draw_vert:
+	# Call coor_to_addr to calculate the actual address of the starting point
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)	# Push $ra to stack for nested function calls
+	jal coor_to_addr	# coor_to_addr does not modify $a0 or $a1
+	lw $ra, 0($sp)	# Pop $ra from stack
+	addi $sp, $sp, 4
+	move $t2, $a2
+dv_do:	sw $a3, 0($v0)	# Paint color to the map
+	addi $t2, $t2, -1	# k--
+	addi $v0, $v0, WIDTH_ADDR	# Advance pointer
+	bgtz $t2, dv_do	# if k>0, loop
+	jr $ra	# return
 	
 # ========== Draw letters and numbers ==========
 draw_A:	addi $sp, $sp, -4
@@ -2073,12 +2106,12 @@ deltaf_right:
 	sw $zero, -8($t0)
 	j falcon_draw
 falcon_draw:
-	li $t1, 0x00545454	# Border black
-	li $t2, 0x00c8c8c8	# Dark grey
-	li $t3, 0x00d3d3d3	# Grey
-	li $t4, 0xffffffff	# Light grey
-	li $t5, 0x0064647e	# Dark blue
-	li $t6, 0x008d8db3	# Light blue
+	li $t1, Falcon1	# Border black
+	li $t2, Falcon2	# Dark grey
+	
+	li $t4, Falcon3	# Light grey
+	li $t5, Falcon5	# Dark blue
+	li $t6, Falcon4	# Light blue
 	
 	move $t0, $v0	
 	sw $t5, 0($t0)
@@ -2152,16 +2185,18 @@ falcon_end:
 	
 
 # This function draws a TIE fighter at ($a0, $a1). If $a2 = -1, it draws an entire TIE fighter.
-# Otherwise, it shifts the sprite towards up, down, left, or right if $a2 is set to 0, 1, 2, 3,
+# Otherwise, it shifts the sprite towards up, down, left, or right if $a2 is set to 0, 2, 1, 3,
 # respectively. Set $a2 to 4 to erase all from the board.
 # @param const $a0, the x coordinate of the TIE fighter.
 # @param const $a1, the y coordinate of the TIE fighter,
 # @param const $a2, how should the function draw this fighter.
-# @param const $a3, the address of the struct of this TIE fighter.
+# @param const $a3, the address of the struct of this TIE fighter. Not needed when in mode 4.
 draw_TIE:
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
 	jal coor_to_addr
+	li $v1, 0
+	jal detect_collision_TIE
 	li $t1, TIE1
 	li $t2, TIE2
 	la $t4, ENEMIES
@@ -2387,9 +2422,9 @@ TIE_ALL:
 	sw $t2, 16($t0)
 	j TIE_end
 TIE_ERASE:
-	add $t1, $zero, $zero
-	add $t2, $zero, $zero
-	add $t3, $zero, $zero
+	li $t1, 0
+	li $t2, 0
+	li $t3, 0
 	sw $t1, 0($v0)
 	sw $t2, 4($v0)
 	sw $t2, -4($v0)
@@ -2434,9 +2469,48 @@ TIE_end:
 	addi $sp, $sp, 4
 	jr $ra
 
-
-
-
+detect_collision_TIE:
+	addi $t0, $v0, -WIDTH_ADDR
+	addi $t0, $t0, -WIDTH_ADDR
+	addi $t0, $t0, -WIDTH_ADDR
+	addi $t0, $t0, -WIDTH_ADDR
+	addi $t1, $t0, 16
+	addi $t0, $t0, -16
+	addi $t2, $v0, WIDTH_ADDR
+	addi $t2, $t2, WIDTH_ADDR
+	addi $t2, $t2, WIDTH_ADDR
+	addi $t2, $t2, WIDTH_ADDR
+	addi $t3, $t2, 16
+	addi $t2, $t2, -16
+	lw $t0, 0($t0)
+	lw $t1, 0($t1)
+	lw $t2, 0($t2)
+	lw $t3, 0($t3)
+	beq $t0, Falcon1, ship_crash
+	beq $t1, Falcon1, ship_crash
+	beq $t2, Falcon1, ship_crash
+	beq $t3, Falcon1, ship_crash
+	beq $t0, Falcon2, ship_crash
+	beq $t1, Falcon2, ship_crash
+	beq $t2, Falcon2, ship_crash
+	beq $t3, Falcon2, ship_crash
+	beq $t0, Falcon3, ship_crash
+	beq $t1, Falcon3, ship_crash
+	beq $t2, Falcon3, ship_crash
+	beq $t3, Falcon3, ship_crash
+	beq $t0, Falcon4, ship_crash
+	beq $t1, Falcon4, ship_crash
+	beq $t2, Falcon4, ship_crash
+	beq $t3, Falcon4, ship_crash
+	beq $t0, Falcon5, ship_crash
+	beq $t1, Falcon5, ship_crash
+	beq $t2, Falcon5, ship_crash
+	beq $t3, Falcon5, ship_crash
+	j no_ship_crash
+ship_crash:
+	li $v1, 1
+no_ship_crash:
+	jr $ra
 
 	
 	
