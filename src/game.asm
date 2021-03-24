@@ -85,14 +85,12 @@ ENEMIES:		.byte	0:18
 			# }
 ENEMY_ENABLED:	.half	0	# A boolean value, to indicate whether enemies can spawn.
 NUM_ENEMIES:	.byte	0	# Number of enemies currectly on screen
-LASERS:		.byte	0:18
+LASERS:		.byte	0:30
 			# struct laser {
 			#     char x;
 			#     char y;
 			#     char isAlive;
 			# }
-LAST_DEAD_LASER:	.word	0
-LASERS_END:	.word	0
 NUM_LASERS:	.byte	0
 			
 # Constants
@@ -116,7 +114,7 @@ NUM_LASERS:	.byte	0
 .eqv	SPF		15		# Inverse of FPS
 .eqv	SP_REGENERATION_DELAY	250	# Ticks before SP starts to regenerate
 .eqv	SP_REGENERATION_RATE	50	# Ticks between two SP regenerations
-
+.eqv	NUM_LASERS_MAX		10
 
 # Colors
 .eqv	WHITE		0x00ffffff
@@ -233,18 +231,31 @@ restart:
 	sb $zero, 16($t0)
 	sb $zero, 17($t0)
 	la $t0, ENEMY_ENABLED
-	li $t1, -250
+	li $t1, -100
 	sh $t1, 0($t0)
 	la $t0, NUM_ENEMIES
 	sb $zero, 0($t0)
 	
-	# Init LASERS, LAST_DEAD_LASER, LASER_END, NUM_LASERS
+	# Init LASERS, NUM_LASERS
 	la $t0, LASERS
-	la $t1, LAST_DEAD_LASER
-	sw $t0, 0($t1)
-	addi $t2, $t0, 18
-	la $t1, LASERS_END
-	sw $t2, 0($t1)
+	sb $zero, 0($t0)
+	sb $zero, 1($t0)
+	sb $zero, 2($t0)
+	sb $zero, 3($t0)
+	sb $zero, 4($t0)
+	sb $zero, 5($t0)
+	sb $zero, 6($t0)
+	sb $zero, 7($t0)
+	sb $zero, 8($t0)
+	sb $zero, 9($t0)
+	sb $zero, 10($t0)
+	sb $zero, 11($t0)
+	sb $zero, 12($t0)
+	sb $zero, 13($t0)
+	sb $zero, 14($t0)
+	sb $zero, 15($t0)
+	sb $zero, 16($t0)
+	sb $zero, 17($t0)
 	la $t0, NUM_LASERS
 	sb $zero, 0($t0)
 	
@@ -388,7 +399,10 @@ spawn_enemy_attempt:
 	jal spawn_enemy
 skip_enemy_spawn_only_move:
 	jal move_enemies
+	# Move lasers
+	jal move_lasers
 	
+	# Handle shield regeneration
 	bgtz $s2, no_regenerate
 	la $t0, SP
 	lb $t1, 0($t0)
@@ -410,6 +424,7 @@ skip_enemy_spawn_only_move:
 	li $s2, SP_REGENERATION_RATE
 no_regenerate:
 	addi $s2, $s2, -1
+	
 	li $v0, 32
 	li $a0, SPF
 	syscall
@@ -772,7 +787,7 @@ found_enemy_slot:
 	li $t3, 3		# direction
 	li $t4, 25	# move_cd
 	li $t5, 25	# fire_cd
-	li $t6, 3		# isAlive
+	li $t6, 2		# isAlive
 	sb $a0, 0($t0)
 	sb $a1, 1($t0)
 	sb $t3, 2($t0)
@@ -907,8 +922,29 @@ handle_fire:
 	    # Else: randomize $t4 and store back
 	    # Spawn laser: Set value and draw sprite
 	# Else: decrese $t4 and store back
-	
-	
+	lb $t4, -13($fp)		# fire_cd
+	bgtz $t4, laser_charge_countdown
+	# Get num_laser
+	la $t6, NUM_LASERS
+	lb $t5, 0($t6)
+	beq $t5, NUM_LASERS_MAX, search_alive_enemy_continue
+	# Start to spawn a new laser
+	lb $a0, -9($fp)
+	lb $a1, -10($fp)
+	jal spawn_laser
+	# Reset fire_cd, RNG from 5 to 15
+	li $a0, 0
+	li $a1, 10
+	li $v0, 42
+	syscall
+	addi $t4, $v0, 5
+	lw $t0, -4($fp)	# Get currect pointer
+	sb $t4, 4($t0)
+	j search_alive_enemy_continue
+laser_charge_countdown:
+	addi $t4, $t4, -3
+	lw $t0, -4($fp)	# Get currect pointer
+	sb $t4, 4($t0)
 	j search_alive_enemy_continue
 crash_with_player:
 	jal handle_damage
@@ -936,6 +972,87 @@ move_enemies_end:
 	addi $sp, $sp, 4
 	jr $ra
 
+spawn_laser:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	la $t0, LASERS	# Main pointer
+	li $t1, NUM_LASERS_MAX
+	mul $t1, $t1, 3
+	add $t1, $t0, $t1	# End condition
+	addi $t0, $t0, -3
+find_empty_laser:
+	addi $t0, $t0, 3
+	beq $t0, $t1, prog_end	# This should never happen
+	lb $t2, 2($t0)
+	bnez $t2, find_empty_laser	# If not empty, loop.
+	# If empty, spawn
+	li $t3, 1
+	sb $t3, 2($t0)	# Set to alive
+	addi $a0, $a0, 6	# Set offset from TIE fighters
+	sb $a0, 0($t0)	# Store x
+	sb $a1, 1($t0)	# Store y
+	li $a2, -1
+	jal draw_laser
+	# Increase num_lasers
+	la $t0, NUM_LASERS
+	lb $t1, 0($t0)
+	addi $t1, $t1, 1
+	sb $t1, 0($t0)
+	
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
+move_lasers:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	addi $sp, $sp, -4
+	sw $fp, 0($sp)
+	move $fp, $sp
+	addi $sp, $sp, -8	# -4($fp) is main pointer
+			# -8($fp) is end condition
+	la $t0, LASERS	# Main pointer
+	li $t1, NUM_LASERS_MAX
+	mul $t1, $t1, 3
+	add $t1, $t0, $t1	# End condition
+	addi $t0, $t0, -3
+find_living_laser:
+	addi $t0, $t0, 3
+	beq $t0, $t1, move_laser_done
+	lb $t2, 2($t0)
+	beqz $t2, find_living_laser
+	# Living laser found
+	lb $a0, 0($t0)	# Read x
+	lb $a1, 1($t0)
+	sw $t0, -4($fp)	# Update local variables
+	sw $t1, -8($fp)
+	bge $a0, 122, despawn_this_laser	# Despawn if almost at right edge
+	addi $a0, $a0, 3	# Don't despawn, just shift
+	sb $a0, 0($t0)
+	li $a2, 0
+	jal draw_laser
+	j move_laser_continue
+despawn_this_laser:
+	sb $zero 2($t0)	# Set dead
+	li $a2, 1		# Set erase
+	jal draw_laser
+	# Decrease num_lasers
+	la $t0, NUM_LASERS
+	lb $t1, 0($t0)
+	addi $t1, $t1, -1
+	sb $t1, 0($t0)
+	j move_laser_continue
+move_laser_continue:
+	lw $t0, -4($fp)
+	lw $t1, -8($fp)
+	j find_living_laser
+move_laser_done:
+	addi $sp, $sp, 8
+	lw $fp, 0($sp)
+	addi $sp, $sp, 4
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
 
 # This function converts a set of coordinates (x, y) to a memory address on the bit map, 
 # @param const $a0, the x coordinate on the map.
@@ -1118,6 +1235,7 @@ already_found:
 	jr $ra
 collision_exception:
 	beq $t0, TIE1, no_collision_possible	# Ignore TIE1 color
+	beq $t0, GREEN, no_collision_possible	# Ignore lasers
 	j prog_end
 	
 	
@@ -2626,7 +2744,37 @@ ship_crash:
 no_ship_crash:
 	jr $ra
 
-	
+draw_laser:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	jal coor_to_addr
+	li $t1, GREEN
+	beq $a2, -1, draw_full_laser
+	beq $a2, 0, shift_laser
+	beq $a2, 1, erase_laser
+	j prog_end
+draw_full_laser:
+	sw $t1, -4($v0)
+	sw $t1, 0($v0)
+	sw $t1, 4($v0)
+	j draw_laser_done
+shift_laser:
+	sw $t1, -4($v0)
+	sw $t1, 0($v0)
+	sw $t1, 4($v0)
+	sw $zero, -8($v0)
+	sw $zero, -12($v0)
+	sw $zero, -16($v0)
+	j draw_laser_done
+erase_laser:
+	sw $zero, -4($v0)
+	sw $zero, 0($v0)
+	sw $zero, 4($v0)
+	j draw_laser_done
+draw_laser_done:
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
 	
 	
 	
