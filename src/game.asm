@@ -934,15 +934,15 @@ handle_fire:
 	jal spawn_laser
 	# Reset fire_cd, RNG from 5 to 15
 	li $a0, 0
-	li $a1, 10
+	li $a1, 15
 	li $v0, 42
 	syscall
-	addi $t4, $v0, 5
+	addi $t4, $a0, 5
 	lw $t0, -4($fp)	# Get currect pointer
 	sb $t4, 4($t0)
 	j search_alive_enemy_continue
 laser_charge_countdown:
-	addi $t4, $t4, -3
+	addi $t4, $t4, -1
 	lw $t0, -4($fp)	# Get currect pointer
 	sb $t4, 4($t0)
 	j search_alive_enemy_continue
