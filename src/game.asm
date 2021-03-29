@@ -37,16 +37,21 @@
 #####################################################################
 .data	
 MAP:	.word	0:16384	# The map is 128x128 = 16384 in size
-# Game mechanics
+# Configurables
 .eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
 .eqv	SPF		40		# Inverse of FPS
-.eqv	SP_REGENERATION_DELAY	250	# Ticks before SP starts to regenerate
-.eqv	SP_REGENERATION_RATE	50	# Ticks between two SP regenerations
+.eqv	SP_REGENERATION_DELAY	200	# Ticks before SP starts to regenerate
+.eqv	SP_REGENERATION_RATE	50	# Ticks between SP regenerations
 .eqv	NUM_LASERS_MAX		10
-.eqv	FIRST_WAVE		660	# Number of ticks before the first wave of enemies
+.eqv	FIRST_WAVE		400	# Number of ticks before the first wave of enemies
 					# will spawn.
-.eqv	MAX_HP			5
-.eqv	MAX_SP			3
+.eqv	MAX_HP			10
+.eqv	MAX_SP			5
+
+.eqv	FIRE_CD_BASE		2
+.eqv	FIRE_CD_RAND		1
+
+# Crucial global variables
 OBSTS:	.byte	0:60	# struct obst {
 			#     char x;
 			#     char y;
@@ -70,20 +75,6 @@ LAST_DEAD:	.word	0
 			# we remember the last item that is set to "dead". In case of a successful spawn,
 			# we advance this variable by 1 index, and carry around to array base if it 
 			# exceeds the maximum address.
-			
-SCORE:		.half	0
-			# These two bytes stores the score. It uses a special structure to save
-			# the effort of converting binary value to decimal value (for printing)
-			# Each 4 bits represents a digit in decimal, for example:
-			# 0011 1011 0000 1001 represents 3709 points. Note: each digit is never 
-			# greater than 1001 (9). Note2: each digit shall use an unsigned value.
-
-SCORE_MODIFIED:	.byte	0
-			# This stores which digits in SCORE should be updated on screen this 
-			# frame.
-			
-HIT:		.half	0
-HIT_MODIFIED:	.byte	0
 
 ENEMIES:		.byte	0:18
 			# struct enemy {
@@ -97,9 +88,9 @@ ENEMIES:		.byte	0:18
 ENEMY_ENABLED:	.half	0	# This value can be positive or negative.
 				# When it's negative, it represents the number of ticks before
 				# a new wave of enemies will spawn.
-				# After a spawning a wave, this will be set to a small positive
-				# number and start to countdown. Before it becomes 0, destroyed
-				# enemy ship will immediately respawn.
+				# After spawning a wave, this will be set to a small positive
+				# number and start to countdown. Before it counts to 0, destroyed
+				# enemy ships will immediately respawn.
 				# After it counts to 0 again, it will be set to a random large
 				# negative number.
 				
@@ -111,6 +102,34 @@ LASERS:		.byte	0:30
 			#     char isAlive;
 			# }
 NUM_LASERS:	.byte	0
+
+ANIMATIONS:	.byte	0:18
+			# struct animations {
+			#     char x;
+			#     char y;
+			#     char frame_counter;
+			# }
+NUM_ANIMATIONS:	.byte	0
+
+
+
+# Statistics	
+SCORE:		.half	0
+			# These two bytes stores the score. It uses a special structure to save
+			# the effort of converting binary value to decimal value (for printing)
+			# Each 4 bits represent a digit in decimal, for example:
+			# 0011 1011 0000 1001 represents 3709 points. Note: each digit is never 
+			# greater than 1001 (9). Note2: each digit shall be interpreted as an 
+			# unsigned value.
+
+SCORE_MODIFIED:	.byte	0
+			# This stores which digits in SCORE should be updated on screen in this 
+			# frame.
+			
+HIT:		.half	0
+HIT_MODIFIED:	.byte	0
+
+
 			
 # Constants
 .eqv	BASE_ADDRESS	0x10010000	# The top left of the map
@@ -153,6 +172,10 @@ NUM_LASERS:	.byte	0
 .eqv	TIE1		0x00303030
 .eqv	TIE2		0x009c9c9c
 .eqv	TIE3		0x00c7c7c7
+
+.eqv	Explo0		0x00ffffff
+.eqv	Explo1		0x00d7421a
+.eqv	Explo2		0x00a32706
 
 .text
 .globl main
@@ -275,9 +298,28 @@ restart:
 	la $t0, NUM_LASERS
 	sb $zero, 0($t0)
 	
-	## Init DIFFICULTY
-	#la $t0, DIFFICULTY
-	#sw $zero, 0($t0)
+	# Init ANIMATIONS, NUM_ANIMATIONS
+	la $t0, ANIMATIONS
+	sb $zero, 0($t0)
+	sb $zero, 1($t0)
+	sb $zero, 2($t0)
+	sb $zero, 3($t0)
+	sb $zero, 4($t0)
+	sb $zero, 5($t0)
+	sb $zero, 6($t0)
+	sb $zero, 7($t0)
+	sb $zero, 8($t0)
+	sb $zero, 9($t0)
+	sb $zero, 10($t0)
+	sb $zero, 11($t0)
+	sb $zero, 12($t0)
+	sb $zero, 13($t0)
+	sb $zero, 14($t0)
+	sb $zero, 15($t0)
+	sb $zero, 16($t0)
+	sb $zero, 17($t0)
+	la $t0, NUM_ANIMATIONS
+	sb $zero, 0($t0)
 	
 	jal draw_ui
 	
@@ -306,17 +348,17 @@ mainloop:
 	li $a0, 0
 	li $a1, 0
 	li $a2, 0
-	li $a3, 5
+	li $a3, 1
 	jal add_score
-	addi $s7, $s7, 5
+	addi $s7, $s7, 1
 	jal draw_score
 no_spawn_yet:
 	addi $s5, $s5, -1
 hold_spawn:
-	# Increase difficulty for each 128 + 5 * num_obst points the player get.
+	# Increase difficulty for each 32 + 5 * num_obst points the player get.
 	addi $t0, $s6, -MAX_ROCK1
 	addi $t0, $t0, 1
-	sll $t0, $t0, 7	# Multiply by 128
+	sll $t0, $t0, 5	# Multiply by 32
 	mul $t1, $s4, 5
 	add $t0, $t0, $t1
 	blt $s7, $t0, no_increase_difficulty
@@ -418,7 +460,12 @@ skip_enemy_spawn_only_move:
 	jal move_enemies
 	# Move lasers
 	jal move_lasers
-	
+	# Animations
+	la $t0, NUM_ANIMATIONS
+	lb $t0, 0($t0)
+	beqz $t0, skip_animations
+	jal move_animations
+skip_animations:
 	# Handle shield regeneration
 	bgtz $s2, no_regenerate
 	la $t0, SP
@@ -453,6 +500,9 @@ restart_key_detect:
 	lw $t8, 0($t9)
 	beqz $t8, restart_key_detect	# Skip if no key is being pressed down.
 	lw $t2, 4($t9)
+	li $v0, 32
+	li $a0, 500
+	syscall
 	bne $t2, KEY_P, restart_key_detect
 	j PAINT_BLACK_SCREEN
 prog_end:
@@ -637,6 +687,7 @@ handle_TIE_damage:
 	jal draw_TIE
 	addi $sp, $sp, 4
 	lw $v1, 0($sp)
+	jal spawn_animations	# Spawn explosion effect
 	# Shrink NUM_ENEMIES
 	la $t0, NUM_ENEMIES
 	lb $t1, 0($t0)
@@ -644,10 +695,10 @@ handle_TIE_damage:
 	sb $t1, 0($t0)
 	li $a0, 0
 	li $a1, 0
-	li $a2, 1
-	li $a3, 0
+	li $a2, 0
+	li $a3, 2
 	jal add_score
-	addi $s7, $s7, 10
+	addi $s7, $s7, 2
 	j TIE_damage_done
 TIE_not_destroyed:
 	# Redraw TIE
@@ -805,7 +856,7 @@ search_alive_enemy:
 	beq $t0, $t1, move_enemies_end
 	lb $t2, 5($t0)
 	bgt $t0, $t1, prog_end
-	beqz $t2, search_alive_enemy
+	blez $t2, search_alive_enemy
 	# If found an alive slot, then...
 	lb $a0, 0($t0)		# Read x
 	lb $a1, 1($t0)		# Read y
@@ -901,11 +952,6 @@ no_new_direction:
 	addi $t3, $t3, -1
 	sb $t3, 3($t0)
 handle_fire:
-	# ================= TODO: Spawn laser ====================
-	# TODO: spawn laser if $t4 is 0
-	    # Skip if num_laser is at max
-	    # Else: randomize $t4 and store back
-	    # Spawn laser: Set value and draw sprite
 	# Else: decrese $t4 and store back
 	lb $t4, -13($fp)		# fire_cd
 	bgtz $t4, laser_charge_countdown
@@ -919,10 +965,10 @@ handle_fire:
 	jal spawn_laser
 	# Reset fire_cd, RNG from 5 to 15
 	li $a0, 0
-	li $a1, 15
+	li $a1, FIRE_CD_RAND
 	li $v0, 42
 	syscall
-	addi $t4, $a0, 5
+	addi $t4, $a0, FIRE_CD_BASE
 	lw $t0, -4($fp)	# Get currect pointer
 	sb $t4, 4($t0)
 	j search_alive_enemy_continue
@@ -945,6 +991,7 @@ crash_with_player:
 	lb $a1, -10($fp)		# y coord
 	li $a2, 4
 	jal draw_TIE
+	jal spawn_animations	# Spawn explosion effect
 	li $a0, 0
 	li $a1, 0
 	li $a2, 0
@@ -967,6 +1014,28 @@ move_enemies_end:
 	addi $sp, $sp, 4
 	jr $ra
 
+# This function checks how many active items are actually there in LASERS and set num_lasers
+# to the correct value.
+# Called by spawn_laser, when no slot is avaliable in LASERS and somewhere requests another
+# laser to be spawned. This means there's a de-sync somewhere between the actual active lasers
+# and num_lasers.
+recheck_num_lasers:
+	la $t0, LASERS
+	li $t3, 0
+recheck_active_laser:
+	beq $t0, $t1, recheck_laser_done
+	lb $t2, 2($t0)
+	addi $t0, $t0, 3
+	beqz $t2, recheck_active_laser
+	addi $t3, $t3, 1
+	j recheck_active_laser
+recheck_laser_done:
+	la $t1, NUM_LASERS
+	sb $t3, 0($t1)
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
 spawn_laser:
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
@@ -977,7 +1046,7 @@ spawn_laser:
 	addi $t0, $t0, -3
 find_empty_laser:
 	addi $t0, $t0, 3
-	beq $t0, $t1, prog_end	# This should never happen
+	beq $t0, $t1, recheck_num_lasers	# This should never happen
 	lb $t2, 2($t0)
 	bnez $t2, find_empty_laser	# If not empty, loop.
 	# If empty, spawn
@@ -1073,6 +1142,87 @@ move_laser_done:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
+
+# This function spawns an animation at ($a0, $a1).
+# Unlike other spawn functions, this function does check NUM_ANIMATIONS before trying to 
+# spawn a new one.
+spawn_animations:
+	la $t0, NUM_ANIMATIONS
+	lb $t0, 0($t0)
+	blt $t0, 3, confirm_spawn_animation
+	jr $ra
+confirm_spawn_animation:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	la $t0, ANIMATIONS
+find_slot_animation:
+	lb $t1, 2($t0)
+	beqz $t1, found_slot_animation
+	addi $t0, $t0, 3
+	j find_slot_animation
+found_slot_animation:
+	# Set frame to 1
+	li $t1, 1
+	sb $t1, 2($t0)
+	# Set x, y
+	sb $a0, 0($t0)
+	sb $a1, 1($t0)
+	# Increse num_animations
+	la $t0, NUM_ANIMATIONS
+	lb $t1, 0($t0)
+	addi $t1, $t1, 1
+	sb $t1, 0($t0)
+	# Return
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra 	
+
+move_animations:
+	addi $sp, $sp, -8
+	sw $ra, 4($sp)
+	sw $fp, 0($sp)
+	move $fp, $sp
+	addi $sp, $sp, -8
+	
+	la $t0, ANIMATIONS	# Main pointer
+	addi $t1, $t0, 18	# End condition
+find_active_animation:
+	lb $t2, 2($t0)
+	bgtz $t2, found_active_animation
+	addi $t0, $t0, 3
+	beq $t0, $t1, move_animations_end
+	j find_active_animation
+found_active_animation:
+	# Store in frame
+	sw $t0, -4($fp)
+	sw $t1, -8($fp)
+	lb $a0, 0($t0)
+	lb $a1, 1($t0)
+	move $a2, $t2
+	jal draw_explosion_effect	# Draw the frame
+	# Load from frame
+	lw $t0, -4($fp)
+	lw $t1, -8($fp)
+	# Advance the frame counter
+	addi $a2, $a2, 1
+	ble $a2, 6, animation_no_reset
+	li $a2, 0	# Reset to 0 if completed
+	la $t3, NUM_ANIMATIONS	# Decrese num_animations
+	lb $t4, 0($t3)
+	addi $t4, $t4, -1
+	sb $t4, 0($t3)
+animation_no_reset:
+	sb $a2, 2($t0)
+	# Advance pointer
+	addi $t0, $t0, 3
+	beq $t0, $t1, move_animations_end
+	j find_active_animation
+move_animations_end:
+	addi $sp, $sp, 8
+	lw $fp, 0($sp)
+	lw $ra, 4($sp)
+	addi $sp, $sp, 8
+	jr $ra 		
 
 # This function converts a set of coordinates (x, y) to a memory address on the bit map, 
 # @param const $a0, the x coordinate on the map.
@@ -1256,6 +1406,9 @@ already_found:
 collision_exception:
 	beq $t0, TIE1, no_collision_possible	# Ignore TIE1 color
 	beq $t0, GREEN, no_collision_possible	# Ignore lasers
+	beq $t0, Explo0, no_collision_possible	# Ignore explosions
+	beq $t0, Explo1, no_collision_possible	# Ignore explosions
+	beq $t0, Explo2, no_collision_possible	# Ignore explosions
 	j prog_end
 	
 	
@@ -2888,5 +3041,115 @@ detect_laser_hit:
 	jr $ra
 ship_hit:
 	li $v1, 1
+	jr $ra
+	
+# This function draws explosion effects.
+# @param const $a0, the x coordinate of the effect.
+# @param const $a1, the y coordinate of the effect.
+# @param const $a2, the frame of the effect.
+draw_explosion_effect:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	jal coor_to_addr
+	li $t0, Explo0
+	li $t1, Explo1
+	li $t2, Explo2
+	beq $a2, 6, explo_f6
+explo_f1:	sw $t0, 0($v0)
+	sw $t1, -4($v0)
+	sw $t1, 4($v0)
+	sw $t1, 512($v0)
+	sw $t1, -512($v0)
+	sw $t2, 508($v0)
+	sw $t2, 516($v0)
+	sw $t2, -516($v0)
+	sw $t2, -508($v0)
+	beq $a2, 1, explo_fe
+explo_f2:	sw $t2, -1024($v0)
+	sw $t2, -1032($v0)
+	sw $t2, -1016($v0)
+	sw $t2, -8($v0)
+	sw $t2, 8($v0)
+	sw $t2, 1024($v0)
+	sw $t2, 1032($v0)
+	sw $t2, 1016($v0)
+	beq $a2, 2, explo_fe
+explo_f3:	sw $t0, 4($v0)
+	sw $t0, -4($v0)
+	sw $t0, 512($v0)
+	sw $t0, -512($v0)
+	sw $t1, 508($v0)
+	sw $t1, 516($v0)
+	sw $t1, -508($v0)
+	sw $t1, -516($v0)
+	sw $t1, 504($v0)
+	sw $t1, 520($v0)
+	sw $t1, -504($v0)
+	sw $t1, -520($v0)
+	sw $t1, 1020($v0)
+	sw $t1, 1028($v0)
+	sw $t1, -1020($v0)
+	sw $t1, -1028($v0)
+	sw $t2, 1540($v0)
+	sw $t2, 1532($v0)
+	sw $t2, -1540($v0)
+	sw $t2, -1532($v0)
+	sw $t2, 524($v0)
+	sw $t2, 500($v0)
+	sw $t2, -524($v0)
+	sw $t2, -500($v0)
+	beq $a2, 3, explo_fe
+explo_f4:	sw $t1, 8($v0)
+	sw $t1, -8($v0)
+	sw $t2, 12($v0)
+	sw $t2, -12($v0)
+	addi $t3, $v0, WIDTH_ADDR
+	sw $t2, 16($t3)
+	sw $t2, -16($t3)
+	addi $t3, $t3, 1024
+	sw $t2, 0($t3)
+	sw $t2, 12($t3)
+	sw $t2, -12($t3)
+	addi $t3, $t3, WIDTH_ADDR
+	sw $t2, 4($t3)
+	sw $t2, -4($t3)
+	# The other side
+	addi $t3, $v0, -WIDTH_ADDR
+	sw $t2, 16($t3)
+	sw $t2, -16($t3)
+	addi $t3, $t3, -1024
+	sw $t2, 0($t3)
+	sw $t2, 12($t3)
+	sw $t2, -12($t3)
+	addi $t3, $t3, -WIDTH_ADDR
+	sw $t2, 4($t3)
+	sw $t2, -4($t3)
+	beq $a2, 4, explo_fe
+explo_f5:	addi $t3, $v0, 1024
+	sw $t2, 20($t3)
+	sw $t2, -20($t3)
+	addi $t3, $t3, 1024
+	sw $t2, 16($t3)
+	sw $t2, -16($t3)
+	sw $t2, 520($t3)
+	sw $t2, 504($t3)
+	# The other side
+	addi $t3, $v0, -1024
+	sw $t2, 20($t3)
+	sw $t2, -20($t3)
+	addi $t3, $t3, -1024
+	sw $t2, 16($t3)
+	sw $t2, -16($t3)
+	sw $t2, -520($t3)
+	sw $t2, -504($t3)
+	j explo_fe
+explo_f6:
+	li $t0, 0
+	li $t1, 0
+	li $t2, 0
+	j explo_f1
+explo_fe:
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
 	jr $ra
 	
