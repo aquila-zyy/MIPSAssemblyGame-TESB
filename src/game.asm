@@ -8,8 +8,8 @@
 # Bitmap Display Configuration: 
 # - Unit width in pixels: 4
 # - Unit height in pixels: 4 
-# - Display width in pixels: 512 (128 visual pixels)
-# - Display height in pixels: 512 (128 visual pixels)
+# - Display width in pixels: 512 (128 units)
+# - Display height in pixels: 512 (128 units)
 # - Base Address for Display: 0x10010000 (static data) 
 #
 # Which milestones have been reached in this submission?
@@ -28,7 +28,7 @@
 # - (insert YouTube / MyMedia / other URL here). Make sure we can view it! 
 # 
 # Are you OK with us sharing the video with people outside course staff? 
-# - yes / no / yes, and please share this project github link as well! 
+# - YES, https://github.com/aquila-zyy/MIPSAssemblyGame-TESB (private repo, I will make it public later)
 # 
 # Any additional information that the TA needs to know: 
 # - The board is too big to fit into $gp. Interferences with other chunks were observed. Therefore 
@@ -38,18 +38,18 @@
 .data	
 MAP:	.word	0:16384	# The map is 128x128 = 16384 in size
 # Configurables
-.eqv	MAX_ROCK1		5		# The maximum number of rock type 1 on screen simultaneously.
-.eqv	SPF		40		# Inverse of FPS
+.eqv	INIT_DIFF		5		# The initial difficulty (num_obsts)
+.eqv	SPF		40		# Inverse of FPS. Millisecond per frame.
 .eqv	SP_REGENERATION_DELAY	200	# Ticks before SP starts to regenerate
 .eqv	SP_REGENERATION_RATE	50	# Ticks between SP regenerations
-.eqv	NUM_LASERS_MAX		10
-.eqv	FIRST_WAVE		400	# Number of ticks before the first wave of enemies
+.eqv	NUM_LASERS_MAX		10	
+.eqv	FIRST_WAVE		1000	# Number of ticks before the first wave of enemies
 					# will spawn.
-.eqv	MAX_HP			10
+.eqv	MAX_HP			8
 .eqv	MAX_SP			5
 
-.eqv	FIRE_CD_BASE		2
-.eqv	FIRE_CD_RAND		1
+.eqv	FIRE_CD_BASE		5
+.eqv	FIRE_CD_RAND		10
 
 # Crucial global variables
 OBSTS:	.byte	0:60	# struct obst {
@@ -128,8 +128,17 @@ SCORE_MODIFIED:	.byte	0
 			
 HIT:		.half	0
 HIT_MODIFIED:	.byte	0
-
-
+# ========== Saved Registers Usage ==========
+# $s0 and $s1 are the (x, y) coordinates of the player. Try not to move them since they 
+#   come quite handy as global variables.
+# $s2 is the shield regeneration counter. After some ticks of not taking any damage the 
+#   shield will start to regenerate 1 point in each certain interval.
+# $s3 is unused.
+# $s4 is number of obstacles on screen. 
+# $s5 is obstacle count down (obst_cd), the delay before another obstacle should spawn.
+# $s6 is the maximum number of obstacles that are allowed on screen at the same time. It
+#   also serves as the difficulty value.
+# $s7 is the score (in binary).
 			
 # Constants
 .eqv	BASE_ADDRESS	0x10010000	# The top left of the map
@@ -179,316 +188,34 @@ HIT_MODIFIED:	.byte	0
 
 .text
 .globl main
-
-# $s0 and $s1 are the (x, y) coordinates of the player. Try not to move them since they 
-#   come quite handy as global variables.
-# $s2 is the shield regeneration counter. After some ticks of not taking any damage the 
-#   shield will start to regenerate 1 point in each certain interval.
-# $s3 is the color of the ship. We need to read the color every time we need to repaint the
-# ship so it's faster to not store it in memory.
-# $s4 is number of obstacles on screen. Since we need to check it every frame, it's better
-#   that we keep it in the register file.
-# $s5 is obstacle count down (obst_cd), the delay before another obstacle should spawn. Again, 
-#   we need to check it every frame so it'll be faster to not store it in memory.
-# $s6 is the maximum number of obstacles that are allowed on screen at the same time.
-# $s7 is the score (in binary).
-
 main:	# Initialize the program.
 	move $fp, $sp	# Set frame pointer to the inital stack pointer.
 	
 restart:	
-	# Init OBSTS, LAST_DEAD, OBSTS_END
-	la $t0, OBSTS	# Set LAST_DEAD to the first item in OBSTS
-	la $t1, LAST_DEAD
-	sw $t0, 0($t1)
-	la $t2, OBSTS_END
-	li $t1, MAX_ROCK1	# Calculate the end address of the OBSTS array.
-	sll $t1, $t1, 2	# Times 4, since each obst struct takes 4 bytes.
-	add $t1, $t1, $t0	# Add the starting address
-	sw $t1, 0($t2)
-	sw $zero, 0($t0)
-	sw $zero, 4($t0)
-	sw $zero, 8($t0)
-	sw $zero, 12($t0)
-	sw $zero, 16($t0)
-	sw $zero, 20($t0)
-	sw $zero, 24($t0)
-	sw $zero, 28($t0)
-	sw $zero, 32($t0)
-	sw $zero, 36($t0)
-	sw $zero, 40($t0)
-	sw $zero, 44($t0)
-	sw $zero, 48($t0)
-	sw $zero, 52($t0)
-	sw $zero, 56($t0)
-	
-	# Init SCORE, HIT, HP, HP_BAR, SP, SP_BAR
-	la $t0, SCORE
-	sh $zero, 0($t0)
-	la $t0, HIT
-	sh $zero, 0($t0)
-	la $t0, HP
-	li $t1, MAX_HP
-	sb $t1, 0($t0)
-	la $t0, HP_BAR
-	li $t2, 13
-	mul $t1, $t1, 3
-	add $t1, $t1, $t2
-	sb $t1, 0($t0)
-	la $t0, SP
-	li $t1, MAX_SP
-	sb $t1, 0($t0)
-	la $t0, SP_BAR
-	li $t2, 13
-	mul $t1, $t1, 3
-	add $t1, $t1, $t2
-	sb $t1, 0($t0)
-	
-	# Init regeneration cd, max_obst, binary score.
-	li $s2, SP_REGENERATION_DELAY
-	li $s6, MAX_ROCK1
-	li $s7, 0
-	
-	# Init ENEMIES, ENEMY_ENABLED, NUM_ENEMIES
-	la $t0, ENEMIES
-	sb $zero, 0($t0)
-	sb $zero, 1($t0)
-	sb $zero, 2($t0)
-	sb $zero, 3($t0)
-	sb $zero, 4($t0)
-	sb $zero, 5($t0)
-	sb $zero, 6($t0)
-	sb $zero, 7($t0)
-	sb $zero, 8($t0)
-	sb $zero, 9($t0)
-	sb $zero, 10($t0)
-	sb $zero, 11($t0)
-	sb $zero, 12($t0)
-	sb $zero, 13($t0)
-	sb $zero, 14($t0)
-	sb $zero, 15($t0)
-	sb $zero, 16($t0)
-	sb $zero, 17($t0)
-	la $t0, ENEMY_ENABLED
-	li $t1, -FIRST_WAVE
-	sh $t1, 0($t0)
-	la $t0, NUM_ENEMIES
-	sb $zero, 0($t0)
-	
-	# Init LASERS, NUM_LASERS
-	la $t0, LASERS
-	sb $zero, 0($t0)
-	sb $zero, 1($t0)
-	sb $zero, 2($t0)
-	sb $zero, 3($t0)
-	sb $zero, 4($t0)
-	sb $zero, 5($t0)
-	sb $zero, 6($t0)
-	sb $zero, 7($t0)
-	sb $zero, 8($t0)
-	sb $zero, 9($t0)
-	sb $zero, 10($t0)
-	sb $zero, 11($t0)
-	sb $zero, 12($t0)
-	sb $zero, 13($t0)
-	sb $zero, 14($t0)
-	sb $zero, 15($t0)
-	sb $zero, 16($t0)
-	sb $zero, 17($t0)
-	la $t0, NUM_LASERS
-	sb $zero, 0($t0)
-	
-	# Init ANIMATIONS, NUM_ANIMATIONS
-	la $t0, ANIMATIONS
-	sb $zero, 0($t0)
-	sb $zero, 1($t0)
-	sb $zero, 2($t0)
-	sb $zero, 3($t0)
-	sb $zero, 4($t0)
-	sb $zero, 5($t0)
-	sb $zero, 6($t0)
-	sb $zero, 7($t0)
-	sb $zero, 8($t0)
-	sb $zero, 9($t0)
-	sb $zero, 10($t0)
-	sb $zero, 11($t0)
-	sb $zero, 12($t0)
-	sb $zero, 13($t0)
-	sb $zero, 14($t0)
-	sb $zero, 15($t0)
-	sb $zero, 16($t0)
-	sb $zero, 17($t0)
-	la $t0, NUM_ANIMATIONS
-	sb $zero, 0($t0)
-	
+	jal initialize_everything
 	jal draw_ui
-	
 	# Draw player ship
 	li $s0, 5
 	li $s1, 79
-	#li $s3, RED	# Default color is red
-	li $s3, 0x00c8c8c8
 	li $a0, -1	# Draw all, not only the shifted.
 	move $a1, $s3
 	jal draw_ship
-
-	# Init obst_cd
-	li $s5, 25
-	# Init num_obst to 0
-	li $s4, 0
-	# Init score
-	li $s7, 0
 mainloop:	
-	jal key_event
-	jal move_rocks
-	bgtz $s5, no_spawn_yet	# Do not spwan if the countdown is not 0
-	beq $s4, $s6, hold_spawn	# Hold the spawn if there're more obstacles on
-				# screen than the maximum allowed number.
-	jal spawn_rock
-	li $a0, 0
-	li $a1, 0
-	li $a2, 0
-	li $a3, 1
-	jal add_score
-	addi $s7, $s7, 1
-	jal draw_score
-no_spawn_yet:
-	addi $s5, $s5, -1
-hold_spawn:
-	# Increase difficulty for each 32 + 5 * num_obst points the player get.
-	addi $t0, $s6, -MAX_ROCK1
-	addi $t0, $t0, 1
-	sll $t0, $t0, 5	# Multiply by 32
-	mul $t1, $s4, 5
-	add $t0, $t0, $t1
-	blt $s7, $t0, no_increase_difficulty
-	beq $s6, 15, no_increase_difficulty	# We've only allocated 15 indices for OBSTS
-	# Increase max_obst
-	addi $s6, $s6, 1
-	# Shift OBSTS_END
-	la $t0, OBSTS_END
-	lw $t1, 0($t0)
-	addi $t1, $t1, 4
-	sw $t1, 0($t0)
-no_increase_difficulty:
-	la $t0, ENEMY_ENABLED
-	lh $t1, 0($t0)
-	bltz $t1, enemy_approching_count_up
-	bgtz $t1, enemy_chasing_count_down
-	beqz $t1, prog_end
-enemy_approching_count_up:
-	addi $t3, $t1, 1
-	sh $t3, 0($t0)
-	blt $t3, -50, skip_enemy_spawn_only_move
-	bgt $t3, -50, no_print_warning
-	li $a0, 15
-	li $a1, 9
-	li $a2, YELLOW
-	jal draw_T
-	li $a0, 19
-	jal draw_I
-	li $a0, 23
-	jal draw_E
-	li $a0, 31
-	jal draw_I
-	li $a0, 35
-	jal draw_N
-	li $a0, 39
-	jal draw_C
-	li $a0, 43
-	jal draw_O
-	li $a0, 47
-	jal draw_M
-	li $a0, 51
-	jal draw_I
-	li $a0, 55
-	jal draw_N
-	li $a0, 59
-	jal draw_G
-no_print_warning:
-	bltz $t3, skip_enemy_spawn_only_move
-	# If count to 0, set it to a positive value
-	addi $t1, $t1, 50
-	sh $t1, 0($t0)
-	j spawn_enemy_attempt
-enemy_chasing_count_down:
-	addi $t1, $t1, -1
-	sh $t1, 0($t0)
-	bgtz $t1, spawn_enemy_attempt
-	# if count to 0, generate a negative number.
-	li $a0, 0
-	li $a1, 500
-	li $v0, 42
-	syscall
-	sub $t2, $zero, $a0
-	addi $t2, $t2, -1000
-	mul $t3, $s6, 50	# Accelerate next wave base on max_obst (difficulty)
-	add $t2, $t2, $t3
-	sh $t2, 0($t0)
-	li $a0, 15
-	li $a1, 9
-	li $a2, BLACK
-	jal draw_T
-	li $a0, 19
-	jal draw_I
-	li $a0, 23
-	jal draw_E
-	li $a0, 31
-	jal draw_I
-	li $a0, 35
-	jal draw_N
-	li $a0, 39
-	jal draw_C
-	li $a0, 43
-	jal draw_O
-	li $a0, 47
-	jal draw_M
-	li $a0, 51
-	jal draw_I
-	li $a0, 55
-	jal draw_N
-	li $a0, 59
-	jal draw_G
-	j skip_enemy_spawn_only_move
-spawn_enemy_attempt:
-# Try spawn enemies
-	la $t0, NUM_ENEMIES
-	lb $t1, 0($t0)
-	beq $t1, 3, skip_enemy_spawn_only_move
-	jal spawn_enemy
-skip_enemy_spawn_only_move:
-	jal move_enemies
-	# Move lasers
-	jal move_lasers
+	jal key_event	# This also moves the player's ship
+	jal move_rocks	# This also checks rock collisions
+	jal check_rock_spawn
+	jal progressively_increase_difficulty
+	jal check_enemy_spawning	# Show / erase warning message, spawn enemies.
+	jal move_enemies	# This also handles laser spawning
+	jal move_lasers	# This also checks laser collisions
 	# Animations
 	la $t0, NUM_ANIMATIONS
 	lb $t0, 0($t0)
 	beqz $t0, skip_animations
-	jal move_animations
+	jal move_animations	# Only one animation for now, the explosion effect.
 skip_animations:
-	# Handle shield regeneration
-	bgtz $s2, no_regenerate
-	la $t0, SP
-	lb $t1, 0($t0)
-	bge $t1, MAX_SP, no_regenerate
-	addi $t1, $t1, 1
-	sb $t1, 0($t0)
-	la $t0, SP_BAR
-	lb $a0, 0($t0)
-	addi $a0, $a0, 3
-	sb $a0, 0($t0)
-	li $a1, 15
-	li $a2, 5
-	li $a3, CYAN
-	jal draw_vert
-	addi $a0, $a0, -1
-	jal draw_vert
-	addi $a0, $a0, -1
-	jal draw_vert
-	li $s2, SP_REGENERATION_RATE
-no_regenerate:
-	addi $s2, $s2, -1
-	
+	jal handle_shield_regeneration
+	# Main loop sleep, for SPF milliseconds.
 	li $v0, 32
 	li $a0, SPF
 	syscall
@@ -501,11 +228,11 @@ restart_key_detect:
 	beqz $t8, restart_key_detect	# Skip if no key is being pressed down.
 	lw $t2, 4($t9)
 	li $v0, 32
-	li $a0, 500
+	li $a0, 600		# Sleep, so we don't loop too quickly.
 	syscall
 	bne $t2, KEY_P, restart_key_detect
 	j PAINT_BLACK_SCREEN
-prog_end:
+prog_end:	# Jump here if there's an exception.
 	# Terminate
 	li $v0, 10
 	syscall
@@ -608,6 +335,186 @@ collision_with_TIE:
 	jal handle_TIE_damage
 	j no_collision
 	
+	
+	
+check_rock_spawn:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	bgtz $s5, no_spawn_yet	# Do not spwan if the countdown is not 0
+	beq $s4, $s6, hold_spawn	# Hold the spawn if there're more obstacles on
+				# screen than the maximum allowed number.
+	jal spawn_rock
+	li $a0, 0
+	li $a1, 0
+	li $a2, 0
+	li $a3, 1
+	jal add_score
+	addi $s7, $s7, 1
+	jal draw_score
+no_spawn_yet:
+	addi $s5, $s5, -1
+hold_spawn:
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
+	
+progressively_increase_difficulty:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	beq $s6, 15, no_increase_difficulty	# We've only allocated 15 indices for OBSTS
+	# Increase difficulty for each 32 + 5 * num_obst points the player get.
+	addi $t0, $s6, -INIT_DIFF
+	addi $t0, $t0, 1
+	sll $t0, $t0, 5	# Multiply by 32
+	mul $t1, $s4, 5
+	add $t0, $t0, $t1
+	blt $s7, $t0, no_increase_difficulty
+	# Increase max_obst
+	addi $s6, $s6, 1
+	# Shift OBSTS_END
+	la $t0, OBSTS_END
+	lw $t1, 0($t0)
+	addi $t1, $t1, 4
+	sw $t1, 0($t0)
+no_increase_difficulty:
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
+	
+handle_shield_regeneration:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	# Handle shield regeneration
+	bgtz $s2, no_regenerate	# Do not regenerate if shield counter > 0
+	la $t0, SP
+	lb $t1, 0($t0)
+	bge $t1, MAX_SP, no_regenerate# Do not regenerate if shield is at max
+	# Add SP += 1
+	addi $t1, $t1, 1
+	sb $t1, 0($t0)
+	# Draw SP_BAR
+	la $t0, SP_BAR
+	lb $a0, 0($t0)
+	addi $a0, $a0, 3
+	sb $a0, 0($t0)	# Update SP_BAR endpoint
+	li $a1, 15
+	li $a2, 5
+	li $a3, CYAN
+	jal draw_vert
+	addi $a0, $a0, -1
+	jal draw_vert
+	addi $a0, $a0, -1
+	jal draw_vert
+	# Load shield regeneration cool down to counter
+	li $s2, SP_REGENERATION_RATE
+no_regenerate:
+	# If no regenerate, decrease cool down
+	addi $s2, $s2, -1
+	
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
+	
+check_enemy_spawning:
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	# Load the enemy counter
+	la $t0, ENEMY_ENABLED
+	lh $t1, 0($t0)
+	bltz $t1, enemy_approching_count_up	# counter < 0, enemy approching
+	bgtz $t1, enemy_chasing_count_down	# counter > 0, enemy spawning
+	beqz $t1, prog_end			# counter should never be 0
+enemy_approching_count_up:
+	addi $t3, $t1, 1
+	sh $t3, 0($t0)
+	blt $t3, -50, skip_enemy_spawn_only_move# Do nothing when counter < -50
+	bgt $t3, -50, no_print_warning	# Don't print warning again when -50 < counter < 0	
+	# Print warning when counter is -50
+	# "TIE INCOMING"
+	li $a0, 15
+	li $a1, 9
+	li $a2, YELLOW
+	jal draw_T
+	li $a0, 19
+	jal draw_I
+	li $a0, 23
+	jal draw_E
+	li $a0, 31
+	jal draw_I
+	li $a0, 35
+	jal draw_N
+	li $a0, 39
+	jal draw_C
+	li $a0, 43
+	jal draw_O
+	li $a0, 47
+	jal draw_M
+	li $a0, 51
+	jal draw_I
+	li $a0, 55
+	jal draw_N
+	li $a0, 59
+	jal draw_G
+no_print_warning:
+	bltz $t3, skip_enemy_spawn_only_move
+	# If count to 0, set it to a positive value
+	addi $t1, $t1, 50
+	sh $t1, 0($t0)
+	j spawn_enemy_attempt
+enemy_chasing_count_down:
+	addi $t1, $t1, -1
+	sh $t1, 0($t0)
+	bgtz $t1, spawn_enemy_attempt
+	# if count to 0, generate a negative number.
+	li $a0, 0
+	li $a1, 500
+	li $v0, 42
+	syscall
+	sub $t2, $zero, $a0
+	addi $t2, $t2, -1000
+	mul $t3, $s6, 50	# Accelerate next wave base on max_obst (difficulty)
+	add $t2, $t2, $t3
+	sh $t2, 0($t0)
+	# Paint out "TIE INCOMING"
+	li $a0, 15
+	li $a1, 9
+	li $a2, BLACK
+	jal draw_T
+	li $a0, 19
+	jal draw_I
+	li $a0, 23
+	jal draw_E
+	li $a0, 31
+	jal draw_I
+	li $a0, 35
+	jal draw_N
+	li $a0, 39
+	jal draw_C
+	li $a0, 43
+	jal draw_O
+	li $a0, 47
+	jal draw_M
+	li $a0, 51
+	jal draw_I
+	li $a0, 55
+	jal draw_N
+	li $a0, 59
+	jal draw_G
+	j skip_enemy_spawn_only_move
+spawn_enemy_attempt:
+# Try spawn enemies
+	la $t0, NUM_ENEMIES
+	lb $t1, 0($t0)
+	beq $t1, 3, skip_enemy_spawn_only_move	# Do not spawn if num_enemies == 3
+	jal spawn_enemy
+skip_enemy_spawn_only_move:
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
 # This function handles the visual effects when player takes a hit.
 # When there's shield left, deduct 1 SP from the SP bar. Otherwise, deduct
 # 1 HP from the HP bar. Whichever is deducted, reset the hit_counter ($s2)
@@ -621,7 +528,7 @@ handle_damage:
 	la $t0, SP
 	lb $t1, 0($t0)
 	beqz $t1, deduct_HP
-	# Deduct SP
+	# Deduct SP if player has SP
 	addi $t1, $t1, -1
 	sb $t1, 0($t0)
 	la $t0, SP_BAR
@@ -639,7 +546,7 @@ handle_damage:
 	jal draw_vert
 	j damage_end
 deduct_HP:
-	# Deduct HP
+	# Deduct HP if SP is 0
 	la $t0, HP	# Load HP address into $t0
 	lb $t1, 0($t0)	# Load HP value into $t1
 	addi $t1, $t1, -1	# Deduct 1
@@ -660,7 +567,7 @@ deduct_HP:
 	addi $a0, $a0, 1	# Set x to what it was.
 	jal draw_vert 
 damage_end:
-	li $s2, 500	# Reset shield regeneration counter
+	li $s2, SP_REGENERATION_DELAY	# Reset shield regeneration counter
 	# Pops $ra
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
@@ -693,6 +600,7 @@ handle_TIE_damage:
 	lb $t1, 0($t0)
 	addi $t1, $t1, -1
 	sb $t1, 0($t0)
+	# Add points
 	li $a0, 0
 	li $a1, 0
 	li $a2, 0
@@ -1016,7 +924,7 @@ move_enemies_end:
 
 # This function checks how many active items are actually there in LASERS and set num_lasers
 # to the correct value.
-# Called by spawn_laser, when no slot is avaliable in LASERS and somewhere requests another
+# Called by spawn_laser, when no slot is avaliable in LASERS and someone requests another
 # laser to be spawned. This means there's a de-sync somewhere between the actual active lasers
 # and num_lasers.
 recheck_num_lasers:
@@ -1035,6 +943,7 @@ recheck_laser_done:
 	lw $ra, 0($sp)
 	addi $sp, $sp, 4
 	jr $ra
+	
 	
 spawn_laser:
 	addi $sp, $sp, -4
@@ -1538,6 +1447,7 @@ key_end:	# Pop back $ra
 	jr $ra
 	
 draw_ui:
+	# Draw the white-greyish frame
 	addi $sp, $sp, -4
 	sw $ra, 0($sp)
 	li $a0, 1
@@ -1620,6 +1530,7 @@ draw_ui:
 	li $a0, 1
 	li $a1, 1
 	jal coor_to_addr
+	# Draw the rounded corners
 	li $t0, BLACK
 	li $t1, WHITE
 	sw $t0, 0($v0)
@@ -2477,19 +2388,9 @@ draw_VOID:
 	addi $sp, $sp, 4
 	jr $ra
 	
-PAINT_BLACK_SCREEN:
-	li $a0, 0
-	li $a1, 0
-	li $a2, 128
-	li $a3, 0
-PAINTB_NEXT:
-	jal draw_hori
-	addi $a1, $a1, 1
-	blt $a1, 128, PAINTB_NEXT
-	
-	j restart
 
 # Falcon
+# @param  $a0, 0=up, 1=down, 2=left, 3=right
 draw_falcon:
 	add $sp, $sp, -8
 	sw $ra, 4($sp)
@@ -2666,7 +2567,7 @@ falcon_end:
 # Otherwise, it shifts the sprite towards up, down, left, or right if $a2 is set to 0, 2, 1, 3,
 # respectively. Set $a2 to 4 to erase all from the board.
 # @param const $a0, the x coordinate of the TIE fighter.
-# @param const $a1, the y coordinate of the TIE fighter,
+# @param const $a1, the y coordinate of the TIE fighter.
 # @param const $a2, how should the function draw this fighter.
 # @param const $a3, the address of the struct of this TIE fighter. Not needed when in mode 4.
 draw_TIE:
@@ -3153,3 +3054,148 @@ explo_fe:
 	addi $sp, $sp, 4
 	jr $ra
 	
+	
+initialize_everything:
+	# Init OBSTS, LAST_DEAD, OBSTS_END
+	la $t0, OBSTS	# Set LAST_DEAD to the first item in OBSTS
+	la $t1, LAST_DEAD
+	sw $t0, 0($t1)
+	la $t2, OBSTS_END
+	li $t1, INIT_DIFF	# Calculate the end address of the OBSTS array.
+	sll $t1, $t1, 2	# Times 4, since each obst struct takes 4 bytes.
+	add $t1, $t1, $t0	# Add the starting address
+	sw $t1, 0($t2)
+	sw $zero, 0($t0)
+	sw $zero, 4($t0)
+	sw $zero, 8($t0)
+	sw $zero, 12($t0)
+	sw $zero, 16($t0)
+	sw $zero, 20($t0)
+	sw $zero, 24($t0)
+	sw $zero, 28($t0)
+	sw $zero, 32($t0)
+	sw $zero, 36($t0)
+	sw $zero, 40($t0)
+	sw $zero, 44($t0)
+	sw $zero, 48($t0)
+	sw $zero, 52($t0)
+	sw $zero, 56($t0)
+	
+	# Init SCORE, HIT, HP, HP_BAR, SP, SP_BAR
+	la $t0, SCORE
+	sh $zero, 0($t0)
+	la $t0, HIT
+	sh $zero, 0($t0)
+	la $t0, HP
+	li $t1, MAX_HP
+	sb $t1, 0($t0)
+	la $t0, HP_BAR
+	li $t2, 13
+	mul $t1, $t1, 3
+	add $t1, $t1, $t2
+	sb $t1, 0($t0)
+	la $t0, SP
+	li $t1, MAX_SP
+	sb $t1, 0($t0)
+	la $t0, SP_BAR
+	li $t2, 13
+	mul $t1, $t1, 3
+	add $t1, $t1, $t2
+	sb $t1, 0($t0)
+	
+	# Init regeneration cd, max_obst, binary score.
+	li $s2, SP_REGENERATION_DELAY
+	li $s6, INIT_DIFF
+	li $s7, 0
+	
+	# Init ENEMIES, ENEMY_ENABLED, NUM_ENEMIES
+	la $t0, ENEMIES
+	sb $zero, 0($t0)
+	sb $zero, 1($t0)
+	sb $zero, 2($t0)
+	sb $zero, 3($t0)
+	sb $zero, 4($t0)
+	sb $zero, 5($t0)
+	sb $zero, 6($t0)
+	sb $zero, 7($t0)
+	sb $zero, 8($t0)
+	sb $zero, 9($t0)
+	sb $zero, 10($t0)
+	sb $zero, 11($t0)
+	sb $zero, 12($t0)
+	sb $zero, 13($t0)
+	sb $zero, 14($t0)
+	sb $zero, 15($t0)
+	sb $zero, 16($t0)
+	sb $zero, 17($t0)
+	la $t0, ENEMY_ENABLED
+	li $t1, -FIRST_WAVE
+	sh $t1, 0($t0)
+	la $t0, NUM_ENEMIES
+	sb $zero, 0($t0)
+	
+	# Init LASERS, NUM_LASERS
+	la $t0, LASERS
+	sb $zero, 0($t0)
+	sb $zero, 1($t0)
+	sb $zero, 2($t0)
+	sb $zero, 3($t0)
+	sb $zero, 4($t0)
+	sb $zero, 5($t0)
+	sb $zero, 6($t0)
+	sb $zero, 7($t0)
+	sb $zero, 8($t0)
+	sb $zero, 9($t0)
+	sb $zero, 10($t0)
+	sb $zero, 11($t0)
+	sb $zero, 12($t0)
+	sb $zero, 13($t0)
+	sb $zero, 14($t0)
+	sb $zero, 15($t0)
+	sb $zero, 16($t0)
+	sb $zero, 17($t0)
+	la $t0, NUM_LASERS
+	sb $zero, 0($t0)
+	
+	# Init ANIMATIONS, NUM_ANIMATIONS
+	la $t0, ANIMATIONS
+	sb $zero, 0($t0)
+	sb $zero, 1($t0)
+	sb $zero, 2($t0)
+	sb $zero, 3($t0)
+	sb $zero, 4($t0)
+	sb $zero, 5($t0)
+	sb $zero, 6($t0)
+	sb $zero, 7($t0)
+	sb $zero, 8($t0)
+	sb $zero, 9($t0)
+	sb $zero, 10($t0)
+	sb $zero, 11($t0)
+	sb $zero, 12($t0)
+	sb $zero, 13($t0)
+	sb $zero, 14($t0)
+	sb $zero, 15($t0)
+	sb $zero, 16($t0)
+	sb $zero, 17($t0)
+	la $t0, NUM_ANIMATIONS
+	sb $zero, 0($t0)
+	# Init obst_cd
+	li $s5, 25
+	# Init num_obst to 0
+	li $s4, 0
+	# Init score
+	li $s7, 0
+	jr $ra
+	
+# This function paints out the entire screen and jumps the the beginning of the program.
+PAINT_BLACK_SCREEN:
+	li $a0, 0
+	li $a1, 0
+	li $a2, 128
+	li $a3, 0
+PAINTB_NEXT:
+	jal draw_hori
+	addi $a1, $a1, 1
+	blt $a1, 128, PAINTB_NEXT
+	
+	j restart
