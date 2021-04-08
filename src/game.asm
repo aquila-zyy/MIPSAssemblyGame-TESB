@@ -25,7 +25,7 @@
 #       to be worth the effort to do the erasing & redrawing)
 #
 # Link to video demonstration for final submission: 
-# - (insert YouTube / MyMedia / other URL here). Make sure we can view it! 
+# - https://youtu.be/05O-ADgilQ4
 # 
 # Are you OK with us sharing the video with people outside course staff? 
 # - YES, https://github.com/aquila-zyy/MIPSAssemblyGame-TESB (private repo, I will make it public later)
