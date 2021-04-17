@@ -3,7 +3,7 @@
 # CSCB58 Winter 2021 Assembly Final Project 
 # University of Toronto, Scarborough 
 # 
-# Student: Yiyang Zhou, 1005719386, zhouyiy8
+# Student: ***************************
 # 
 # Bitmap Display Configuration: 
 # - Unit width in pixels: 4
@@ -28,7 +28,7 @@
 # - https://youtu.be/05O-ADgilQ4
 # 
 # Are you OK with us sharing the video with people outside course staff? 
-# - YES, https://github.com/aquila-zyy/MIPSAssemblyGame-TESB (private repo, I will make it public later)
+# - YES, https://github.com/aquila-zyy/MIPSAssemblyGame-TESB
 # 
 # Any additional information that the TA needs to know: 
 # - The board is too big to fit into $gp. Interferences with other chunks were observed. Therefore 
